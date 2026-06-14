@@ -107,6 +107,10 @@ function initDatabase() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       record_no TEXT UNIQUE NOT NULL,
       original_hang_id INTEGER NOT NULL,
+      original_garment_id INTEGER,
+      original_area_id INTEGER,
+      original_layer_no INTEGER,
+      original_position_no INTEGER,
       new_garment_id INTEGER NOT NULL,
       new_area_id INTEGER,
       new_layer_no INTEGER,
@@ -115,6 +119,8 @@ function initDatabase() {
       operator_id INTEGER,
       swap_time DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (original_hang_id) REFERENCES hanging_records(id),
+      FOREIGN KEY (original_garment_id) REFERENCES garments(id),
+      FOREIGN KEY (original_area_id) REFERENCES display_areas(id),
       FOREIGN KEY (new_garment_id) REFERENCES garments(id),
       FOREIGN KEY (new_area_id) REFERENCES display_areas(id),
       FOREIGN KEY (operator_id) REFERENCES users(id)
@@ -181,7 +187,25 @@ function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_missing_status ON missing_part_notes(status);
   `);
 
+  migrateDatabase();
   seedInitialData();
+}
+
+function migrateDatabase() {
+  const columns = db.prepare(`PRAGMA table_info(swap_records)`).all();
+  const colNames = columns.map(c => c.name);
+  if (!colNames.includes('original_garment_id')) {
+    db.prepare(`ALTER TABLE swap_records ADD COLUMN original_garment_id INTEGER`).run();
+  }
+  if (!colNames.includes('original_area_id')) {
+    db.prepare(`ALTER TABLE swap_records ADD COLUMN original_area_id INTEGER`).run();
+  }
+  if (!colNames.includes('original_layer_no')) {
+    db.prepare(`ALTER TABLE swap_records ADD COLUMN original_layer_no INTEGER`).run();
+  }
+  if (!colNames.includes('original_position_no')) {
+    db.prepare(`ALTER TABLE swap_records ADD COLUMN original_position_no INTEGER`).run();
+  }
 }
 
 function seedInitialData() {

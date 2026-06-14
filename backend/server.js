@@ -371,15 +371,16 @@ app.get('/api/hanging-records/:id', authMiddleware, (req, res) => {
     WHERE h.id = ?`).get(req.params.id);
   if (!hang) return res.status(404).json({ message: '记录不存在' });
 
-  const swaps = db.prepare(`SELECT s.*, 
-    og.garment_name as original_garment_name, ng.garment_name as new_garment_name,
-    oda.area_name as original_area, nda.area_name as new_area,
+  const swaps = db.prepare(`SELECT s.*,
+    og.garment_code as original_garment_code, og.garment_name as original_garment_name,
+    ng.garment_code as new_garment_code, ng.garment_name as new_garment_name,
+    oda.area_code as original_area_code, oda.area_name as original_area,
+    nda.area_code as new_area_code, nda.area_name as new_area,
     u.real_name as operator_name
     FROM swap_records s
-    LEFT JOIN hanging_records oh ON s.original_hang_id = oh.id
-    LEFT JOIN garments og ON oh.garment_id = og.id
+    LEFT JOIN garments og ON s.original_garment_id = og.id
     LEFT JOIN garments ng ON s.new_garment_id = ng.id
-    LEFT JOIN display_areas oda ON oh.area_id = oda.id
+    LEFT JOIN display_areas oda ON s.original_area_id = oda.id
     LEFT JOIN display_areas nda ON s.new_area_id = nda.id
     LEFT JOIN users u ON s.operator_id = u.id
     WHERE s.original_hang_id = ? ORDER BY s.swap_time DESC`).all(req.params.id);
@@ -435,9 +436,11 @@ app.post('/api/swap', authMiddleware, (req, res) => {
   const recordNo = generateRecordNo('SWP');
   const tx = db.transaction(() => {
     const swapInfo = db.prepare(`INSERT INTO swap_records 
-      (record_no, original_hang_id, new_garment_id, new_area_id, new_layer_no, new_position_no, swap_reason, operator_id) 
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(recordNo, originalHangId, newGarmentId, newAreaId || null, newLayerNo || null, newPositionNo || null, swapReason || '', req.user.id);
+      (record_no, original_hang_id, original_garment_id, original_area_id, original_layer_no, original_position_no,
+       new_garment_id, new_area_id, new_layer_no, new_position_no, swap_reason, operator_id) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(recordNo, originalHangId, originalHang.garment_id, originalHang.area_id, originalHang.layer_no, originalHang.position_no,
+           newGarmentId, newAreaId || null, newLayerNo || null, newPositionNo || null, swapReason || '', req.user.id);
 
     db.prepare(`UPDATE hanging_records SET 
       garment_id = ?, area_id = ?, layer_no = ?, position_no = ?, status = '已挂装' 
@@ -504,7 +507,21 @@ app.get('/api/recovery-records', authMiddleware, (req, res) => {
   const total = db.prepare(`SELECT COUNT(*) as c FROM (${sql})`).get(...params).c;
   const offset = (page - 1) * pageSize;
   const data = db.prepare(sql + ' LIMIT ? OFFSET ?').all(...params, Number(pageSize), offset);
-  res.json({ data, total, page: Number(page), pageSize: Number(pageSize) });
+
+  const statusCounts = db.prepare(`SELECT status, COUNT(*) as count FROM recovery_records GROUP BY status`).all();
+  const countsMap = {};
+  statusCounts.forEach(s => { countsMap[s.status] = s.count; });
+
+  res.json({
+    data,
+    total,
+    page: Number(page),
+    pageSize: Number(pageSize),
+    status_counts: {
+      pending: countsMap['待回收确认'] || 0,
+      recovered: countsMap['已回收'] || 0
+    }
+  });
 });
 
 app.post('/api/recovery/confirm', authMiddleware, (req, res) => {
@@ -550,14 +567,22 @@ app.post('/api/missing-part', authMiddleware, (req, res) => {
   const { hangId, tagId, garmentId, missingType, missingDescription } = req.body;
   if (!missingType || !missingDescription) return res.status(400).json({ message: '缺件类型和描述必填' });
   const recordNo = generateRecordNo('MIS');
-  const info = db.prepare(`INSERT INTO missing_part_notes 
-    (record_no, hang_id, tag_id, garment_id, missing_type, missing_description, reporter_id, status) 
-    VALUES (?, ?, ?, ?, ?, ?, ?, '未处理')`)
-    .run(recordNo, hangId || null, tagId || null, garmentId || null, missingType, missingDescription, req.user.id);
-
-  if (tagId) updateTagStatus(tagId, '异常观察');
-  logOperation(req.user.id, '上报缺件', 'missing_part', info.lastInsertRowid, missingType);
-  res.json({ data: { id: info.lastInsertRowid, recordNo }, message: '缺件说明已记录' });
+  const tx = db.transaction(() => {
+    const info = db.prepare(`INSERT INTO missing_part_notes 
+      (record_no, hang_id, tag_id, garment_id, missing_type, missing_description, reporter_id, status) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, '未处理')`)
+      .run(recordNo, hangId || null, tagId || null, garmentId || null, missingType, missingDescription, req.user.id);
+    if (tagId) {
+      updateTagStatus(tagId, '异常观察');
+      if (hangId) {
+        db.prepare('UPDATE hanging_records SET status = ? WHERE id = ?').run('异常观察', hangId);
+      }
+    }
+    return info;
+  });
+  const result = tx();
+  logOperation(req.user.id, '上报缺件', 'missing_part', result.lastInsertRowid, missingType);
+  res.json({ data: { id: result.lastInsertRowid, recordNo }, message: '缺件说明已记录' });
 });
 
 app.get('/api/missing-parts', authMiddleware, (req, res) => {
@@ -605,7 +630,15 @@ app.post('/api/missing-part/:id/handle', authMiddleware, (req, res) => {
       if (remainUnresolved === 0) {
         const tag = db.prepare('SELECT status FROM tags WHERE id = ?').get(missing.tag_id);
         if (tag && tag.status === '异常观察') {
-          updateTagStatus(missing.tag_id, '待挂牌');
+          let recoveredStatus = '待挂牌';
+          if (missing.hang_id) {
+            const hang = db.prepare('SELECT id, status FROM hanging_records WHERE id = ?').get(missing.hang_id);
+            if (hang && hang.status === '异常观察') {
+              db.prepare('UPDATE hanging_records SET status = ? WHERE id = ?').run('已挂装', hang.id);
+              recoveredStatus = '已挂装';
+            }
+          }
+          updateTagStatus(missing.tag_id, recoveredStatus);
         }
       }
     }
@@ -624,9 +657,12 @@ app.get('/api/statistics/overview', authMiddleware, (req, res) => {
 
   const statusDistribution = db.prepare(`SELECT status, COUNT(*) as count FROM tags GROUP BY status`).all();
 
-  const categoryDistribution = db.prepare(`SELECT c.id, c.category_name, COUNT(g.id) as count
-    FROM categories c LEFT JOIN garments g ON c.parent_id = 0 AND g.category_id = c.id
-    WHERE c.parent_id = 0 GROUP BY c.id ORDER BY count DESC`).all();
+  const categoryDistribution = db.prepare(`SELECT p.id, p.category_name, COUNT(g.id) as count
+    FROM categories p
+    LEFT JOIN categories c ON c.parent_id = p.id
+    LEFT JOIN garments g ON g.category_id = c.id
+    WHERE p.parent_id = 0
+    GROUP BY p.id ORDER BY count DESC`).all();
 
   const areaOccupancy = db.prepare(`SELECT da.id, da.area_code, da.area_name, da.floor, da.capacity,
     COUNT(h.id) as used_count
@@ -703,7 +739,7 @@ app.get('/api/statistics/overview', authMiddleware, (req, res) => {
 
 app.get('/api/swap-records', authMiddleware, (req, res) => {
   const { page = 1, pageSize = 20, startDate, endDate, keyword } = req.query;
-  let sql = `SELECT s.*, 
+  let sql = `SELECT s.*,
     oh.record_no as original_hang_no,
     og.garment_code as original_garment_code, og.garment_name as original_garment_name,
     ng.garment_code as new_garment_code, ng.garment_name as new_garment_name,
@@ -713,9 +749,9 @@ app.get('/api/swap-records', authMiddleware, (req, res) => {
     FROM swap_records s
     JOIN hanging_records oh ON s.original_hang_id = oh.id
     JOIN tags t ON oh.tag_id = t.id
-    JOIN garments og ON oh.garment_id = og.id
+    JOIN garments og ON s.original_garment_id = og.id
     JOIN garments ng ON s.new_garment_id = ng.id
-    LEFT JOIN display_areas oda ON oh.area_id = oda.id
+    LEFT JOIN display_areas oda ON s.original_area_id = oda.id
     LEFT JOIN display_areas nda ON s.new_area_id = nda.id
     LEFT JOIN users u ON s.operator_id = u.id
     WHERE 1=1`;

@@ -107,13 +107,14 @@ import { getRecoveryRecordsApi, confirmRecoveryApi, rejectRecoveryApi } from '@/
 const loading = ref(false)
 const tableData = ref([])
 const total = ref(0)
+const statusCounts = ref({ pending: 0, recovered: 0 })
 const statusList = RECOVERY_STATUS_OPTIONS
 const dateRange = ref([])
 
 const filters = reactive({ page: 1, pageSize: 20, keyword: '', status: '', startDate: '', endDate: '' })
 
-const pendingCount = computed(() => tableData.value.filter(r => r.status === '待回收确认').length)
-const recoveredCount = computed(() => tableData.value.filter(r => r.status === '已回收').length)
+const pendingCount = computed(() => statusCounts.value.pending)
+const recoveredCount = computed(() => statusCounts.value.recovered)
 
 function getOverdueDays(time) {
   if (!time) return 0
@@ -130,6 +131,9 @@ async function loadData(page) {
     const res = await getRecoveryRecordsApi(filters)
     tableData.value = res.data
     total.value = res.total
+    if (res.status_counts) {
+      statusCounts.value = res.status_counts
+    }
   } finally { loading.value = false }
 }
 
