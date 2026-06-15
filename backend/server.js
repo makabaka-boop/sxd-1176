@@ -684,6 +684,13 @@ app.get('/api/statistics/overview', authMiddleware, (req, res) => {
   const pendingRecovery = db.prepare('SELECT COUNT(*) as c FROM recovery_records WHERE status = \'待回收确认\'').get().c;
   const unhandledMissing = db.prepare('SELECT COUNT(*) as c FROM missing_part_notes WHERE status != \'已处理\'').get().c;
 
+  const totalAnomaly = db.prepare('SELECT COUNT(*) as c FROM anomaly_tickets').get().c;
+  const pendingAnomaly = db.prepare('SELECT COUNT(*) as c FROM anomaly_tickets WHERE status IN (\'待处理\',\'处理中\')').get().c;
+  const overdueAnomaly = db.prepare(`SELECT COUNT(*) as c FROM anomaly_tickets 
+    WHERE status != '已关闭' AND expected_handle_date IS NOT NULL AND expected_handle_date < date('now')`).get().c;
+  const anomalyTypeStats = db.prepare(`SELECT anomaly_type, COUNT(*) as count 
+    FROM anomaly_tickets GROUP BY anomaly_type ORDER BY count DESC`).all();
+
   const expiringCount = db.prepare(`SELECT COUNT(*) as c FROM hanging_records 
     WHERE status IN ('已挂装','待调换','异常观察','待回收确认') 
     AND expected_off_date IS NOT NULL 
@@ -774,11 +781,13 @@ app.get('/api/statistics/overview', authMiddleware, (req, res) => {
     data: {
       summary: {
         totalTags, totalGarments, totalHanging, pendingRecovery, unhandledMissing,
-        expiringCount, overdueCount, statusDistribution
+        expiringCount, overdueCount, statusDistribution,
+        totalAnomaly, pendingAnomaly, overdueAnomaly
       },
       categoryDistribution,
       areaOccupancy,
       missingTypeStats,
+      anomalyTypeStats,
       pendingConfirmList,
       expiryReminders,
       anomalies: {
@@ -821,6 +830,274 @@ app.get('/api/swap-records', authMiddleware, (req, res) => {
   const offset = (page - 1) * pageSize;
   const data = db.prepare(sql + ' LIMIT ? OFFSET ?').all(...params, Number(pageSize), offset);
   res.json({ data, total, page: Number(page), pageSize: Number(pageSize) });
+});
+
+const ANOMALY_STATUS_OPTIONS = ['待处理', '处理中', '已关闭'];
+const ANOMALY_TYPE_OPTIONS = [
+  '挂牌丢失', '挂牌损坏', '样衣破损', '样衣污渍', '样衣遗失',
+  '配件缺失', '尺码标缺失', '陈列错误', '超期未处理', '其他'
+];
+
+app.get('/api/anomaly-tickets/types', authMiddleware, (req, res) => {
+  res.json({ data: ANOMALY_TYPE_OPTIONS });
+});
+
+app.get('/api/anomaly-tickets', authMiddleware, (req, res) => {
+  const { page = 1, pageSize = 20, status, responsibleId, anomalyType, tagCode, garmentCode, startDate, endDate, keyword, overdue } = req.query;
+  let sql = `SELECT a.*,
+    t.tag_code, g.garment_code, g.garment_name, c.category_name,
+    h.record_no as hang_record_no, h.status as hang_status,
+    da.area_name, da.area_code, da.floor, h.layer_no, h.position_no,
+    rp.person_name, rp.person_code, rp.department,
+    u1.real_name as reporter_name,
+    u2.real_name as handler_name,
+    u3.real_name as closer_name,
+    julianday(a.expected_handle_date) - julianday(date('now')) as days_left
+    FROM anomaly_tickets a
+    LEFT JOIN hanging_records h ON a.hang_id = h.id
+    LEFT JOIN tags t ON a.tag_id = t.id
+    LEFT JOIN garments g ON a.garment_id = g.id
+    LEFT JOIN categories c ON g.category_id = c.id
+    LEFT JOIN display_areas da ON h.area_id = da.id
+    LEFT JOIN responsible_persons rp ON a.responsible_id = rp.id
+    LEFT JOIN users u1 ON a.reporter_id = u1.id
+    LEFT JOIN users u2 ON a.current_handler_id = u2.id
+    LEFT JOIN users u3 ON a.close_user_id = u3.id
+    WHERE 1=1`;
+  const params = [];
+  if (keyword) {
+    sql += ' AND (a.ticket_no LIKE ? OR a.description LIKE ? OR t.tag_code LIKE ? OR g.garment_code LIKE ? OR g.garment_name LIKE ?)';
+    params.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`);
+  }
+  if (status) { sql += ' AND a.status = ?'; params.push(status); }
+  if (responsibleId) { sql += ' AND a.responsible_id = ?'; params.push(responsibleId); }
+  if (anomalyType) { sql += ' AND a.anomaly_type = ?'; params.push(anomalyType); }
+  if (tagCode) { sql += ' AND t.tag_code LIKE ?'; params.push(`%${tagCode}%`); }
+  if (garmentCode) { sql += ' AND g.garment_code LIKE ?'; params.push(`%${garmentCode}%`); }
+  if (startDate) { sql += ' AND a.report_time >= ?'; params.push(startDate); }
+  if (endDate) { sql += ' AND a.report_time <= ?'; params.push(endDate + ' 23:59:59'); }
+  if (overdue === 'true') {
+    sql += " AND a.status != '已关闭' AND a.expected_handle_date IS NOT NULL AND a.expected_handle_date < date('now')";
+  }
+  sql += ' ORDER BY a.id DESC';
+
+  const total = db.prepare(`SELECT COUNT(*) as c FROM (${sql})`).get(...params).c;
+  const offset = (page - 1) * pageSize;
+  const rawData = db.prepare(sql + ' LIMIT ? OFFSET ?').all(...params, Number(pageSize), offset);
+
+  const data = rawData.map(row => {
+    let overdue = false;
+    let daysLeft = null;
+    if (row.expected_handle_date && row.status !== '已关闭') {
+      const exp = getExpiryStatus(row.expected_handle_date);
+      overdue = exp?.status === 'overdue';
+      daysLeft = exp?.daysLeft ?? null;
+    }
+    return { ...row, is_overdue: overdue, days_left: daysLeft };
+  });
+
+  const statusCounts = db.prepare(`SELECT status, COUNT(*) as count FROM anomaly_tickets GROUP BY status`).all();
+  const countsMap = {};
+  statusCounts.forEach(s => { countsMap[s.status] = s.count; });
+
+  const overdueCount = db.prepare(`SELECT COUNT(*) as c FROM anomaly_tickets 
+    WHERE status != '已关闭' AND expected_handle_date IS NOT NULL AND expected_handle_date < date('now')`).get().c;
+
+  const typeStats = db.prepare(`SELECT anomaly_type, COUNT(*) as count 
+    FROM anomaly_tickets GROUP BY anomaly_type ORDER BY count DESC`).all();
+
+  res.json({
+    data, total,
+    page: Number(page), pageSize: Number(pageSize),
+    status_counts: {
+      pending: countsMap['待处理'] || 0,
+      processing: countsMap['处理中'] || 0,
+      closed: countsMap['已关闭'] || 0
+    },
+    overdue_count: overdueCount,
+    type_stats: typeStats
+  });
+});
+
+app.get('/api/anomaly-tickets/:id', authMiddleware, (req, res) => {
+  const ticket = db.prepare(`SELECT a.*,
+    t.tag_code, t.rfid_code, t.status as tag_status,
+    g.garment_code, g.garment_name, g.season, g.color, g.size, c.category_name,
+    h.record_no as hang_record_no, h.status as hang_status,
+    da.area_name, da.area_code, da.floor, h.layer_no, h.position_no,
+    rp.person_name, rp.person_code, rp.department, rp.phone, rp.email,
+    u1.real_name as reporter_name,
+    u2.real_name as handler_name,
+    u3.real_name as closer_name,
+    julianday(a.expected_handle_date) - julianday(date('now')) as days_left
+    FROM anomaly_tickets a
+    LEFT JOIN hanging_records h ON a.hang_id = h.id
+    LEFT JOIN tags t ON a.tag_id = t.id
+    LEFT JOIN garments g ON a.garment_id = g.id
+    LEFT JOIN categories c ON g.category_id = c.id
+    LEFT JOIN display_areas da ON h.area_id = da.id
+    LEFT JOIN responsible_persons rp ON a.responsible_id = rp.id
+    LEFT JOIN users u1 ON a.reporter_id = u1.id
+    LEFT JOIN users u2 ON a.current_handler_id = u2.id
+    LEFT JOIN users u3 ON a.close_user_id = u3.id
+    WHERE a.id = ?`).get(req.params.id);
+  if (!ticket) return res.status(404).json({ message: '异常工单不存在' });
+
+  const expiry = ticket.expected_handle_date && ticket.status !== '已关闭' ? getExpiryStatus(ticket.expected_handle_date) : null;
+  const ticketWithExpiry = { ...ticket, is_overdue: expiry?.status === 'overdue', days_left: expiry?.daysLeft ?? null };
+
+  const handoverLogs = db.prepare(`SELECT hl.*,
+    u1.real_name as from_user_name, u2.real_name as to_user_name
+    FROM anomaly_handover_logs hl
+    LEFT JOIN users u1 ON hl.from_user_id = u1.id
+    LEFT JOIN users u2 ON hl.to_user_id = u2.id
+    WHERE hl.ticket_id = ? ORDER BY hl.handover_time DESC`).all(req.params.id);
+
+  res.json({ data: { ...ticketWithExpiry, handoverLogs } });
+});
+
+app.post('/api/anomaly-tickets', authMiddleware, (req, res) => {
+  const { hangId, anomalyType, description, responsibleId, expectedHandleDate } = req.body;
+  if (!anomalyType || !description) {
+    return res.status(400).json({ message: '异常类型和问题描述必填' });
+  }
+
+  let tagId = null, garmentId = null, hang = null;
+  if (hangId) {
+    hang = db.prepare('SELECT * FROM hanging_records WHERE id = ?').get(hangId);
+    if (!hang) return res.status(404).json({ message: '挂装记录不存在' });
+    if (!['已挂装', '待调换', '异常观察'].includes(hang.status)) {
+      return res.status(400).json({ message: `当前挂装状态"${hang.status}"不允许发起异常登记` });
+    }
+    tagId = hang.tag_id;
+    garmentId = hang.garment_id;
+  }
+
+  const ticketNo = generateRecordNo('EXC');
+  const tx = db.transaction(() => {
+    const info = db.prepare(`INSERT INTO anomaly_tickets 
+      (ticket_no, hang_id, tag_id, garment_id, anomaly_type, description, responsible_id, reporter_id, expected_handle_date, status, current_handler_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '待处理', ?)`)
+      .run(ticketNo, hangId || null, tagId, garmentId, anomalyType, description, responsibleId || null, req.user.id, expectedHandleDate || null, req.user.id);
+
+    if (hang) {
+      db.prepare('UPDATE hanging_records SET status = ? WHERE id = ?').run('异常观察', hangId);
+      updateTagStatus(tagId, '异常观察');
+    }
+    return info;
+  });
+  const result = tx();
+  logOperation(req.user.id, '创建异常工单', 'anomaly_ticket', result.lastInsertRowid, `${ticketNo} - ${anomalyType}`);
+  res.json({ data: { id: result.lastInsertRowid, ticketNo }, message: '异常工单已创建' });
+});
+
+app.post('/api/anomaly-tickets/:id/handle', authMiddleware, (req, res) => {
+  const { handleResult } = req.body;
+  const ticket = db.prepare('SELECT * FROM anomaly_tickets WHERE id = ?').get(req.params.id);
+  if (!ticket) return res.status(404).json({ message: '异常工单不存在' });
+  if (ticket.status === '已关闭') return res.status(400).json({ message: '已关闭的工单不可处理' });
+
+  const tx = db.transaction(() => {
+    db.prepare(`UPDATE anomaly_tickets SET 
+      status = '处理中', handle_result = COALESCE(NULLIF(handle_result, ''), handle_result), 
+      handle_time = CURRENT_TIMESTAMP, current_handler_id = ?
+      WHERE id = ?`).run(req.user.id, req.params.id);
+  });
+  tx();
+  logOperation(req.user.id, '处理异常工单', 'anomaly_ticket', req.params.id, ticket.ticket_no);
+  res.json({ message: '异常工单处理中' });
+});
+
+app.post('/api/anomaly-tickets/:id/handover', authMiddleware, (req, res) => {
+  const { toUserId, handoverRemark } = req.body;
+  if (!toUserId) return res.status(400).json({ message: '请选择转交接收人' });
+
+  const ticket = db.prepare('SELECT * FROM anomaly_tickets WHERE id = ?').get(req.params.id);
+  if (!ticket) return res.status(404).json({ message: '异常工单不存在' });
+  if (ticket.status === '已关闭') return res.status(400).json({ message: '已关闭的工单不可转交' });
+
+  const toUser = db.prepare('SELECT * FROM users WHERE id = ?').get(toUserId);
+  if (!toUser) return res.status(404).json({ message: '接收人不存在' });
+
+  const tx = db.transaction(() => {
+    db.prepare(`INSERT INTO anomaly_handover_logs 
+      (ticket_id, from_user_id, to_user_id, handover_remark)
+      VALUES (?, ?, ?, ?)`).run(req.params.id, ticket.current_handler_id || req.user.id, toUserId, handoverRemark || '');
+    db.prepare(`UPDATE anomaly_tickets SET 
+      current_handler_id = ?, status = '处理中'
+      WHERE id = ?`).run(toUserId, req.params.id);
+  });
+  tx();
+  logOperation(req.user.id, '转交异常工单', 'anomaly_ticket', req.params.id, `${ticket.ticket_no} -> ${toUser.real_name}`);
+  res.json({ message: '转交成功' });
+});
+
+app.post('/api/anomaly-tickets/:id/close', authMiddleware, (req, res) => {
+  const { closeRemark } = req.body;
+  const ticket = db.prepare('SELECT * FROM anomaly_tickets WHERE id = ?').get(req.params.id);
+  if (!ticket) return res.status(404).json({ message: '异常工单不存在' });
+  if (ticket.status === '已关闭') return res.status(400).json({ message: '该工单已关闭' });
+
+  const tx = db.transaction(() => {
+    db.prepare(`UPDATE anomaly_tickets SET 
+      status = '已关闭', close_user_id = ?, close_time = CURRENT_TIMESTAMP, close_remark = ?
+      WHERE id = ?`).run(req.user.id, closeRemark || '', req.params.id);
+
+    if (ticket.hang_id) {
+      const remainUnresolvedAnomaly = db.prepare(`SELECT COUNT(*) as c FROM anomaly_tickets 
+        WHERE hang_id = ? AND status != '已关闭' AND id != ?`).get(ticket.hang_id, req.params.id).c;
+      const remainUnresolvedMissing = db.prepare(`SELECT COUNT(*) as c FROM missing_part_notes 
+        WHERE hang_id = ? AND status != '已处理'`).get(ticket.hang_id).c;
+      const pendingRecovery = db.prepare(`SELECT COUNT(*) as c FROM recovery_records 
+        WHERE hang_id = ? AND status = '待回收确认'`).get(ticket.hang_id).c;
+
+      if (remainUnresolvedAnomaly === 0 && remainUnresolvedMissing === 0) {
+        if (pendingRecovery > 0) {
+          db.prepare('UPDATE hanging_records SET status = ? WHERE id = ?').run('待回收确认', ticket.hang_id);
+          updateTagStatus(ticket.tag_id, '待回收确认');
+        } else {
+          const hang = db.prepare('SELECT status FROM hanging_records WHERE id = ?').get(ticket.hang_id);
+          if (hang && hang.status === '异常观察') {
+            db.prepare('UPDATE hanging_records SET status = ? WHERE id = ?').run('已挂装', ticket.hang_id);
+            updateTagStatus(ticket.tag_id, '已挂装');
+          }
+        }
+      }
+    } else if (ticket.tag_id) {
+      const remainUnresolvedAnomaly = db.prepare(`SELECT COUNT(*) as c FROM anomaly_tickets 
+        WHERE tag_id = ? AND status != '已关闭' AND id != ?`).get(ticket.tag_id, req.params.id).c;
+      const remainUnresolvedMissing = db.prepare(`SELECT COUNT(*) as c FROM missing_part_notes 
+        WHERE tag_id = ? AND status != '已处理'`).get(ticket.tag_id).c;
+      if (remainUnresolvedAnomaly === 0 && remainUnresolvedMissing === 0) {
+        const tag = db.prepare('SELECT status FROM tags WHERE id = ?').get(ticket.tag_id);
+        if (tag && tag.status === '异常观察') {
+          updateTagStatus(ticket.tag_id, '待挂牌');
+        }
+      }
+    }
+  });
+  tx();
+  logOperation(req.user.id, '关闭异常工单', 'anomaly_ticket', req.params.id, ticket.ticket_no);
+  res.json({ message: '异常工单已关闭，关联挂牌状态已根据剩余异常情况自动恢复' });
+});
+
+app.get('/api/hanging-records/:id/anomalies', authMiddleware, (req, res) => {
+  const data = db.prepare(`SELECT a.*,
+    u1.real_name as reporter_name, u2.real_name as handler_name,
+    julianday(a.expected_handle_date) - julianday(date('now')) as days_left
+    FROM anomaly_tickets a
+    LEFT JOIN users u1 ON a.reporter_id = u1.id
+    LEFT JOIN users u2 ON a.current_handler_id = u2.id
+    WHERE a.hang_id = ? ORDER BY a.report_time DESC`).all(req.params.id);
+  const enriched = data.map(row => {
+    let overdue = false;
+    if (row.expected_handle_date && row.status !== '已关闭') {
+      const exp = getExpiryStatus(row.expected_handle_date);
+      overdue = exp?.status === 'overdue';
+    }
+    return { ...row, is_overdue: overdue };
+  });
+  res.json({ data: enriched });
 });
 
 app.use((err, req, res, next) => {

@@ -44,3 +44,12 @@ export const handleMissingPartApi = (id, data) => request.post(`/missing-part/${
 export const getMissingPartsApi = (params) => request.get('/missing-parts', { params })
 
 export const getOverviewStatsApi = () => request.get('/statistics/overview')
+
+export const getAnomalyTypesApi = () => request.get('/anomaly-tickets/types')
+export const getAnomalyTicketsApi = (params) => request.get('/anomaly-tickets', { params })
+export const getAnomalyTicketApi = (id) => request.get(`/anomaly-tickets/${id}`)
+export const createAnomalyTicketApi = (data) => request.post('/anomaly-tickets', data)
+export const handleAnomalyTicketApi = (id, data) => request.post(`/anomaly-tickets/${id}/handle`, data)
+export const handoverAnomalyTicketApi = (id, data) => request.post(`/anomaly-tickets/${id}/handover`, data)
+export const closeAnomalyTicketApi = (id, data) => request.post(`/anomaly-tickets/${id}/close`, data)
+export const getHangingAnomaliesApi = (id) => request.get(`/hanging-records/${id}/anomalies`)

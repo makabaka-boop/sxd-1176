@@ -54,6 +54,12 @@ const routes = [
         name: 'MissingParts',
         component: () => import('@/views/MissingParts.vue'),
         meta: { title: '缺件说明', icon: 'Warning' }
+      },
+      {
+        path: 'anomaly-tickets',
+        name: 'AnomalyTickets',
+        component: () => import('@/views/AnomalyTickets.vue'),
+        meta: { title: '异常工单', icon: 'CircleCheck' }
       }
     ]
   }

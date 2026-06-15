@@ -12,6 +12,12 @@
         </el-button>
         <el-button type="warning" :icon="RefreshLeft" @click="requestRecovery" :disabled="!['已挂装','待调换','异常观察'].includes(detail.status)">申请回收</el-button>
         <el-button type="danger" :icon="Warning" @click="reportMissing" :disabled="!['已挂装','异常观察'].includes(detail.status)">缺件上报</el-button>
+        <el-button type="danger" :icon="CircleCheck" @click="reportAnomaly" :disabled="!['已挂装','待调换','异常观察'].includes(detail.status)">登记异常</el-button>
+        <el-button v-if="(anomalyList || []).length > 0" link type="primary" @click="$router.push('/anomaly-tickets')">
+          <el-badge :value="(anomalyList || []).filter(a => a.status !== '已关闭').length" :max="99" class="anomaly-badge">
+            关联异常工单
+          </el-badge>
+        </el-button>
       </div>
     </div>
 
@@ -235,6 +241,39 @@
             </el-table-column>
           </el-table>
         </el-tab-pane>
+        <el-tab-pane name="anomaly" label="异常工单">
+          <div style="margin-bottom:12px;">
+            <el-button type="danger" :icon="Plus" size="small" @click="reportAnomaly" :disabled="!['已挂装','待调换','异常观察'].includes(detail?.status)">登记异常</el-button>
+          </div>
+          <el-empty v-if="!anomalyList?.length" description="暂无异常工单" />
+          <el-table v-else :data="anomalyList" stripe>
+            <el-table-column prop="ticket_no" label="工单编号" width="200" />
+            <el-table-column prop="anomaly_type" label="异常类型" width="110">
+              <template #default="{ row }"><el-tag type="danger" size="small">{{ row.anomaly_type }}</el-tag></template>
+            </el-table-column>
+            <el-table-column prop="description" label="问题描述" min-width="200" show-overflow-tooltip />
+            <el-table-column prop="expected_handle_date" label="期望处理" width="110" />
+            <el-table-column label="超期" width="80" align="center">
+              <template #default="{ row }">
+                <el-tag v-if="row.is_overdue" type="danger" size="small">已超期</el-tag>
+                <span v-else>-</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="reporter_name" label="登记人" width="90" />
+            <el-table-column prop="report_time" label="登记时间" width="170" />
+            <el-table-column prop="status" label="状态" width="90">
+              <template #default="{ row }"><el-tag :type="getAnomalyStatusTagType(row.status)" size="small">{{ row.status }}</el-tag></template>
+            </el-table-column>
+            <el-table-column prop="handler_name" label="处理人" width="90">
+              <template #default="{ row }">{{ row.handler_name || '-' }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="160" fixed="right">
+              <template #default="{ row }">
+                <el-button link type="primary" size="small" @click="goToAnomaly(row)">查看</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-tab-pane>
       </el-tabs>
     </div>
 
@@ -321,6 +360,50 @@
         <el-button type="primary" :loading="submitLoading" @click="submitHandleMissing">标记已处理</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="anomalyDialogVisible" title="登记异常工单" width="560px">
+      <el-alert type="warning" :closable="false" style="margin-bottom:16px;">
+        关联挂装：<b>{{ detail?.tag_code }}</b> - {{ detail?.garment_name }} @ {{ detail?.area_name }}
+      </el-alert>
+      <el-form :model="anomalyForm" :rules="anomalyRules" ref="anomalyFormRef" label-width="100px">
+        <el-row :gutter="12">
+          <el-col :span="12">
+            <el-form-item label="异常类型" prop="anomalyType">
+              <el-select v-model="anomalyForm.anomalyType" style="width:100%;">
+                <el-option v-for="t in anomalyTypes" :key="t.value" :label="t.label" :value="t.value" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="责任人" prop="responsibleId">
+              <el-select v-model="anomalyForm.responsibleId" filterable style="width:100%;" placeholder="请选择责任人">
+                <el-option v-for="p in responsiblePersons" :key="p.id" :label="`${p.person_name}（${p.department}）`" :value="p.id" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-form-item label="期望处理日期">
+          <el-date-picker
+            v-model="anomalyForm.expectedHandleDate"
+            type="date"
+            placeholder="选择期望处理完成日期"
+            value-format="YYYY-MM-DD"
+            style="width:100%;"
+          />
+        </el-form-item>
+        <el-form-item label="问题描述" prop="description">
+          <el-input v-model="anomalyForm.description" type="textarea" :rows="4" placeholder="请详细描述异常情况" />
+        </el-form-item>
+        <div style="color:#e6a23c; font-size:12px; padding:8px; background:#fdf6ec; border-radius:4px;">
+          <el-icon><Warning /></el-icon>
+          &nbsp;登记异常后，该挂牌和挂装状态将自动变更为"异常观察"
+        </div>
+      </el-form>
+      <template #footer>
+        <el-button @click="anomalyDialogVisible=false">取消</el-button>
+        <el-button type="danger" :loading="submitLoading" @click="submitAnomaly">确认登记</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -328,11 +411,12 @@
 import { ref, reactive, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowLeft, Switch, RefreshLeft, Warning, Plus, InfoFilled } from '@element-plus/icons-vue'
-import { getStatusTagType, MISSING_TYPE_OPTIONS, getExpiryStatusTagType, getExpiryStatusLabel, getDaysLeftText } from '@/utils/constants'
+import { ArrowLeft, Switch, RefreshLeft, Warning, Plus, InfoFilled, CircleCheck } from '@element-plus/icons-vue'
+import { getStatusTagType, MISSING_TYPE_OPTIONS, getExpiryStatusTagType, getExpiryStatusLabel, getDaysLeftText, ANOMALY_TYPE_OPTIONS, getAnomalyStatusTagType } from '@/utils/constants'
 import {
   getHangingRecordApi, getAreasApi, getAvailableGarmentsApi,
-  createSwapApi, requestRecoveryApi, createMissingPartApi, handleMissingPartApi
+  createSwapApi, requestRecoveryApi, createMissingPartApi, handleMissingPartApi,
+  createAnomalyTicketApi, getHangingAnomaliesApi, getResponsiblePersonsApi
 } from '@/api'
 
 const route = useRoute()
@@ -342,6 +426,9 @@ const activeTab = ref('swap')
 const areas = ref([])
 const availableGarments = ref([])
 const missingTypes = MISSING_TYPE_OPTIONS
+const anomalyTypes = ANOMALY_TYPE_OPTIONS
+const responsiblePersons = ref([])
+const anomalyList = ref([])
 const submitLoading = ref(false)
 
 const swapDialogVisible = ref(false)
@@ -364,11 +451,25 @@ const handleDialogVisible = ref(false)
 const handleMissingRow = ref(null)
 const handleResult = ref('')
 
+const anomalyDialogVisible = ref(false)
+const anomalyFormRef = ref()
+const anomalyForm = reactive({ hangId: '', anomalyType: '', description: '', responsibleId: '', expectedHandleDate: '' })
+const anomalyRules = {
+  anomalyType: [{ required: true, message: '请选择异常类型', trigger: 'change' }],
+  description: [{ required: true, message: '请填写问题描述', trigger: 'blur' }]
+}
+
 async function loadDetail() {
   loading.value = true
   try {
-    const res = await getHangingRecordApi(route.params.id)
+    const [res, anomalies, rp] = await Promise.all([
+      getHangingRecordApi(route.params.id),
+      getHangingAnomaliesApi(route.params.id),
+      getResponsiblePersonsApi()
+    ])
     detail.value = res.data
+    anomalyList.value = anomalies.data
+    responsiblePersons.value = rp.data
   } finally {
     loading.value = false
   }
@@ -451,6 +552,29 @@ async function submitHandleMissing() {
     handleDialogVisible.value = false
     loadDetail()
   } finally { submitLoading.value = false }
+}
+
+function reportAnomaly() {
+  Object.assign(anomalyForm, {
+    hangId: detail.value.id, anomalyType: '', description: '',
+    responsibleId: detail.value.responsible_id || '', expectedHandleDate: ''
+  })
+  anomalyDialogVisible.value = true
+}
+
+async function submitAnomaly() {
+  await anomalyFormRef.value.validate()
+  submitLoading.value = true
+  try {
+    await createAnomalyTicketApi(anomalyForm)
+    ElMessage.success('异常工单已登记')
+    anomalyDialogVisible.value = false
+    loadDetail()
+  } finally { submitLoading.value = false }
+}
+
+function goToAnomaly(row) {
+  window.open(`/anomaly-tickets`, '_blank')
 }
 
 onMounted(loadDetail)

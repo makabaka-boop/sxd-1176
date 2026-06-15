@@ -168,6 +168,46 @@ function initDatabase() {
       FOREIGN KEY (handler_id) REFERENCES users(id)
     );
 
+    CREATE TABLE IF NOT EXISTS anomaly_tickets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_no TEXT UNIQUE NOT NULL,
+      hang_id INTEGER,
+      tag_id INTEGER,
+      garment_id INTEGER,
+      anomaly_type TEXT NOT NULL,
+      description TEXT NOT NULL,
+      responsible_id INTEGER,
+      reporter_id INTEGER,
+      report_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+      expected_handle_date DATE,
+      status TEXT DEFAULT '待处理',
+      current_handler_id INTEGER,
+      handle_result TEXT,
+      handle_time DATETIME,
+      close_user_id INTEGER,
+      close_time DATETIME,
+      close_remark TEXT,
+      FOREIGN KEY (hang_id) REFERENCES hanging_records(id),
+      FOREIGN KEY (tag_id) REFERENCES tags(id),
+      FOREIGN KEY (garment_id) REFERENCES garments(id),
+      FOREIGN KEY (responsible_id) REFERENCES responsible_persons(id),
+      FOREIGN KEY (reporter_id) REFERENCES users(id),
+      FOREIGN KEY (current_handler_id) REFERENCES users(id),
+      FOREIGN KEY (close_user_id) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS anomaly_handover_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_id INTEGER NOT NULL,
+      from_user_id INTEGER,
+      to_user_id INTEGER NOT NULL,
+      handover_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+      handover_remark TEXT,
+      FOREIGN KEY (ticket_id) REFERENCES anomaly_tickets(id),
+      FOREIGN KEY (from_user_id) REFERENCES users(id),
+      FOREIGN KEY (to_user_id) REFERENCES users(id)
+    );
+
     CREATE TABLE IF NOT EXISTS operation_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER,
@@ -187,6 +227,9 @@ function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_swap_original ON swap_records(original_hang_id);
     CREATE INDEX IF NOT EXISTS idx_recovery_status ON recovery_records(status);
     CREATE INDEX IF NOT EXISTS idx_missing_status ON missing_part_notes(status);
+    CREATE INDEX IF NOT EXISTS idx_anomaly_status ON anomaly_tickets(status);
+    CREATE INDEX IF NOT EXISTS idx_anomaly_hang ON anomaly_tickets(hang_id);
+    CREATE INDEX IF NOT EXISTS idx_anomaly_tag ON anomaly_tickets(tag_id);
   `);
 
   migrateDatabase();

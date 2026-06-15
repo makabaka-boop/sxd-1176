@@ -40,10 +40,11 @@
         <el-table-column prop="fabric" label="面料" min-width="140" show-overflow-tooltip />
         <el-table-column prop="description" label="备注" min-width="140" show-overflow-tooltip />
         <el-table-column prop="created_at" label="创建时间" width="170" />
-        <el-table-column label="操作" width="140" fixed="right">
+        <el-table-column label="操作" width="220" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="openEditDialog(row)">编辑</el-button>
             <el-button link type="primary" size="small" @click="openHangDialog(row)" v-if="canHang(row)">挂装</el-button>
+            <el-button link type="danger" size="small" @click="openAnomalyDialog(row)">登记异常</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -165,6 +166,55 @@
         <el-button type="primary" :loading="hangLoading" @click="submitHang">确认挂装</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="anomalyDialogVisible" title="登记异常工单" width="560px">
+      <el-alert type="warning" :closable="false" style="margin-bottom:16px;">
+        样衣：<b>{{ anomalyGarment?.garment_name }}</b>（{{ anomalyGarment?.garment_code }}）
+      </el-alert>
+      <el-form :model="anomalyForm" :rules="anomalyRules" ref="anomalyFormRef" label-width="100px">
+        <el-form-item label="关联挂装">
+          <el-select v-model="anomalyForm.hangId" filterable clearable style="width:100%;" placeholder="选择该样衣的已挂装记录">
+            <el-option v-for="h in garmentHangingOptions" :key="h.id" :label="`${h.tag_code} - ${h.area_name} L${h.layer_no}-P${h.position_no}`" :value="h.id" />
+          </el-select>
+        </el-form-item>
+        <el-row :gutter="12">
+          <el-col :span="12">
+            <el-form-item label="异常类型" prop="anomalyType">
+              <el-select v-model="anomalyForm.anomalyType" style="width:100%;">
+                <el-option v-for="t in anomalyTypes" :key="t.value" :label="t.label" :value="t.value" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="责任人" prop="responsibleId">
+              <el-select v-model="anomalyForm.responsibleId" filterable style="width:100%;" placeholder="请选择责任人">
+                <el-option v-for="p in responsiblePersons" :key="p.id" :label="`${p.person_name}（${p.department}）`" :value="p.id" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-form-item label="期望处理日期">
+          <el-date-picker
+            v-model="anomalyForm.expectedHandleDate"
+            type="date"
+            placeholder="选择期望处理完成日期"
+            value-format="YYYY-MM-DD"
+            style="width:100%;"
+          />
+        </el-form-item>
+        <el-form-item label="问题描述" prop="description">
+          <el-input v-model="anomalyForm.description" type="textarea" :rows="4" placeholder="请详细描述异常情况" />
+        </el-form-item>
+        <div style="color:#e6a23c; font-size:12px; padding:8px; background:#fdf6ec; border-radius:4px;">
+          <el-icon><Warning /></el-icon>
+          &nbsp;若选择了关联挂装，登记异常后该挂牌和挂装状态将自动变更为"异常观察"
+        </div>
+      </el-form>
+      <template #footer>
+        <el-button @click="anomalyDialogVisible=false">取消</el-button>
+        <el-button type="danger" :loading="anomalyLoading" @click="submitAnomaly">确认登记</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -172,10 +222,12 @@
 import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Search, Refresh } from '@element-plus/icons-vue'
+import { Plus, Search, Refresh, Warning } from '@element-plus/icons-vue'
+import { ANOMALY_TYPE_OPTIONS } from '@/utils/constants'
 import { getCategoriesApi, getAreasApi, getResponsiblePersonsApi,
   getGarmentsApi, createGarmentApi, updateGarmentApi,
-  getAvailableTagsApi, createHangingApi } from '@/api'
+  getAvailableTagsApi, createHangingApi,
+  createAnomalyTicketApi, getHangingRecordsApi } from '@/api'
 
 const router = useRouter()
 const loading = ref(false)
@@ -209,6 +261,18 @@ const hangRules = {
   layerNo: [{ required: true, message: '请输入层号', trigger: 'blur' }],
   positionNo: [{ required: true, message: '请输入位号', trigger: 'blur' }],
   responsibleId: [{ required: true, message: '请选择责任人', trigger: 'change' }]
+}
+
+const anomalyTypes = ANOMALY_TYPE_OPTIONS
+const anomalyDialogVisible = ref(false)
+const anomalyGarment = ref(null)
+const anomalyFormRef = ref()
+const anomalyLoading = ref(false)
+const garmentHangingOptions = ref([])
+const anomalyForm = reactive({ hangId: '', anomalyType: '', description: '', responsibleId: '', expectedHandleDate: '' })
+const anomalyRules = {
+  anomalyType: [{ required: true, message: '请选择异常类型', trigger: 'change' }],
+  description: [{ required: true, message: '请填写问题描述', trigger: 'blur' }]
 }
 
 async function loadMaster() {
@@ -294,6 +358,29 @@ async function submitHang() {
     loadData()
   } finally {
     hangLoading.value = false
+  }
+}
+
+async function openAnomalyDialog(row) {
+  anomalyGarment.value = row
+  Object.assign(anomalyForm, { hangId: '', anomalyType: '', description: '', responsibleId: responsiblePersons.value[0]?.id || '', expectedHandleDate: '' })
+  garmentHangingOptions.value = []
+  try {
+    const res = await getHangingRecordsApi({ pageSize: 200, keyword: row.garment_code })
+    garmentHangingOptions.value = res.data.filter(h => h.garment_id === row.id || true)
+  } catch (e) {}
+  anomalyDialogVisible.value = true
+}
+
+async function submitAnomaly() {
+  await anomalyFormRef.value.validate()
+  anomalyLoading.value = true
+  try {
+    await createAnomalyTicketApi(anomalyForm)
+    ElMessage.success('异常工单已登记')
+    anomalyDialogVisible.value = false
+  } finally {
+    anomalyLoading.value = false
   }
 }
 

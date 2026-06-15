@@ -2,12 +2,24 @@
   <div class="page-container">
     <el-row :gutter="16" class="mb-16">
       <el-col :span="3" v-for="s in summaryCards" :key="s.label">
-        <div class="stat-card flex-between">
+        <div class="stat-card flex-between" :style="{ cursor: s.click ? 'pointer' : 'default' }" @click="s.click && s.click()">
           <div>
             <div class="stat-label">{{ s.label }}</div>
             <div class="stat-value" :style="{ color: s.color }">{{ s.value }}</div>
           </div>
           <el-icon class="stat-icon" :style="{ color: s.color }"><component :is="s.icon" /></el-icon>
+        </div>
+      </el-col>
+    </el-row>
+
+    <el-row :gutter="16" class="mb-16">
+      <el-col :span="8" v-for="s in anomalyCards" :key="s.label">
+        <div class="stat-card flex-between" :style="{ cursor: s.click ? 'pointer' : 'default', borderLeft: '4px solid #f56c6c' }" @click="s.click && s.click()">
+          <div>
+            <div class="stat-label">{{ s.label }}</div>
+            <div class="stat-value" :style="{ color: s.color, fontSize: '32px' }">{{ s.value }}</div>
+          </div>
+          <el-icon class="stat-icon" :size="36" :style="{ color: s.color }"><component :is="s.icon" /></el-icon>
         </div>
       </el-col>
     </el-row>
@@ -36,7 +48,9 @@
       </el-col>
       <el-col :span="10">
         <div class="stat-card">
-          <div class="detail-section-title">异常类型分布</div>
+          <div class="detail-section-title">
+            <span style="cursor:pointer;" @click="router.push('/anomaly-tickets')">异常类型分布</span>
+          </div>
           <div ref="missingChartRef" class="chart-container" style="height:320px;"></div>
         </div>
       </el-col>
@@ -153,15 +167,16 @@
 import { ref, reactive, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import * as echarts from 'echarts'
-import { Tickets, CollectionTag, ShoppingCartFull, Warning, RefreshRight, Clock, Bell } from '@element-plus/icons-vue'
+import { Tickets, CollectionTag, ShoppingCartFull, Warning, RefreshRight, Clock, Bell, CircleCheck } from '@element-plus/icons-vue'
 import { getOverviewStatsApi } from '@/api'
 
 const router = useRouter()
 const stats = reactive({
-  summary: {}, categoryDistribution: [], areaOccupancy: [], missingTypeStats: [],
+  summary: {}, categoryDistribution: [], areaOccupancy: [], missingTypeStats: [], anomalyTypeStats: [],
   pendingConfirmList: [], expiryReminders: [], anomalies: {}, trendData: []
 })
 const summaryCards = ref([])
+const anomalyCards = ref([])
 const activeTab = ref('expiry')
 
 const categoryChartRef = ref()
@@ -175,13 +190,18 @@ async function loadData() {
   const res = await getOverviewStatsApi()
   Object.assign(stats, res.data)
   summaryCards.value = [
-    { label: '挂牌总数', value: stats.summary.totalTags || 0, color: '#409eff', icon: Tickets },
-    { label: '样衣总数', value: stats.summary.totalGarments || 0, color: '#67c23a', icon: CollectionTag },
-    { label: '在挂数量', value: stats.summary.totalHanging || 0, color: '#e6a23c', icon: ShoppingCartFull },
-    { label: '即将到期', value: stats.summary.expiringCount || 0, color: '#e6a23c', icon: Clock },
-    { label: '已超期', value: stats.summary.overdueCount || 0, color: '#f56c6c', icon: Bell },
-    { label: '待回收确认', value: stats.summary.pendingRecovery || 0, color: '#f56c6c', icon: RefreshRight },
-    { label: '未处理缺件', value: stats.summary.unhandledMissing || 0, color: '#909399', icon: Warning }
+    { label: '挂牌总数', value: stats.summary.totalTags || 0, color: '#409eff', icon: Tickets, click: null },
+    { label: '样衣总数', value: stats.summary.totalGarments || 0, color: '#67c23a', icon: CollectionTag, click: null },
+    { label: '在挂数量', value: stats.summary.totalHanging || 0, color: '#e6a23c', icon: ShoppingCartFull, click: null },
+    { label: '即将到期', value: stats.summary.expiringCount || 0, color: '#e6a23c', icon: Clock, click: null },
+    { label: '已超期', value: stats.summary.overdueCount || 0, color: '#f56c6c', icon: Bell, click: null },
+    { label: '待回收确认', value: stats.summary.pendingRecovery || 0, color: '#f56c6c', icon: RefreshRight, click: null },
+    { label: '未处理缺件', value: stats.summary.unhandledMissing || 0, color: '#909399', icon: Warning, click: null }
+  ]
+  anomalyCards.value = [
+    { label: '异常工单总数', value: stats.summary.totalAnomaly || 0, color: '#909399', icon: CircleCheck, click: () => router.push('/anomaly-tickets') },
+    { label: '待处理异常', value: stats.summary.pendingAnomaly || 0, color: '#f56c6c', icon: Warning, click: () => router.push('/anomaly-tickets?status=待处理') },
+    { label: '超期异常', value: stats.summary.overdueAnomaly || 0, color: '#f56c6c', icon: Bell, click: () => router.push('/anomaly-tickets?overdue=true') }
   ]
   await nextTick()
   renderCharts()
@@ -240,17 +260,23 @@ function renderCharts() {
 
   if (missingChartRef.value) {
     const c = echarts.init(missingChartRef.value)
-    const d = stats.missingTypeStats || []
+    const anomalyData = stats.anomalyTypeStats && stats.anomalyTypeStats.length > 0
+      ? stats.anomalyTypeStats.map(x => ({ name: x.anomaly_type, value: x.count }))
+      : (stats.missingTypeStats || []).map(x => ({ name: x.missing_type, value: x.count || x.value }))
     c.setOption({
       tooltip: { trigger: 'axis' },
       grid: { left: 90, right: 20, top: 10, bottom: 30 },
       xAxis: { type: 'value' },
-      yAxis: { type: 'category', data: d.map(x => x.missing_type).reverse() },
+      yAxis: { type: 'category', data: anomalyData.map(x => x.name).reverse() },
       series: [{
-        type: 'bar', data: d.map(x => x.value || x.count).reverse(),
+        type: 'bar', data: anomalyData.map(x => x.value).reverse(),
         itemStyle: { color: '#f56c6c' }, barWidth: 18,
         label: { show: true, position: 'right', formatter: '{c}条' }
       }]
+    })
+    c.off('click')
+    c.on('click', (params) => {
+      router.push(`/anomaly-tickets?anomalyType=${encodeURIComponent(params.name)}`)
     })
     charts.push(c); window.addEventListener('resize', () => c.resize())
   }
