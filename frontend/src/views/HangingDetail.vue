@@ -180,7 +180,7 @@
               :key="s.id"
               :timestamp="s.swap_time"
               placement="top"
-              :type="s.swap_count >= 3 ? 'danger' : 'primary'"
+              :type="detail.swaps?.length >= 3 ? 'danger' : 'primary'"
               size="large"
             >
               <el-card shadow="never" style="margin-bottom:12px;">

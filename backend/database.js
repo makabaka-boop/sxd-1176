@@ -138,6 +138,7 @@ function initDatabase() {
       confirm_operator_id INTEGER,
       confirm_time DATETIME,
       status TEXT DEFAULT '待回收确认',
+      original_status TEXT,
       remark TEXT,
       FOREIGN KEY (hang_id) REFERENCES hanging_records(id),
       FOREIGN KEY (tag_id) REFERENCES tags(id),
@@ -215,6 +216,12 @@ function migrateDatabase() {
   const hangColNames = hangCols.map(c => c.name);
   if (!hangColNames.includes('expected_off_date')) {
     db.prepare(`ALTER TABLE hanging_records ADD COLUMN expected_off_date DATE`).run();
+  }
+
+  const recCols = db.prepare(`PRAGMA table_info(recovery_records)`).all();
+  const recColNames = recCols.map(c => c.name);
+  if (!recColNames.includes('original_status')) {
+    db.prepare(`ALTER TABLE recovery_records ADD COLUMN original_status TEXT`).run();
   }
 }
 

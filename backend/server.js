@@ -358,11 +358,11 @@ app.get('/api/hanging-records', authMiddleware, (req, res) => {
     sql += ' AND NOT EXISTS (SELECT 1 FROM missing_part_notes m WHERE m.hang_id = h.id AND m.status != \'已处理\')';
   }
   if (expiryStatus === 'overdue') {
-    sql += ' AND h.expected_off_date IS NOT NULL AND h.expected_off_date < date(\'now\') AND h.status IN (\'已挂装\',\'待调换\',\'异常观察\')';
+    sql += " AND h.expected_off_date IS NOT NULL AND h.expected_off_date < date('now') AND h.status IN ('已挂装','待调换','异常观察','待回收确认')";
   } else if (expiryStatus === 'expiring') {
-    sql += ' AND h.expected_off_date IS NOT NULL AND h.expected_off_date >= date(\'now\') AND h.expected_off_date <= date(\'now\', \'+7 day\') AND h.status IN (\'已挂装\',\'待调换\',\'异常观察\')';
+    sql += " AND h.expected_off_date IS NOT NULL AND h.expected_off_date >= date('now') AND h.expected_off_date <= date('now', '+7 day') AND h.status IN ('已挂装','待调换','异常观察','待回收确认')";
   } else if (expiryStatus === 'normal') {
-    sql += ' AND h.expected_off_date IS NOT NULL AND h.expected_off_date > date(\'now\', \'+7 day\') AND h.status IN (\'已挂装\',\'待调换\',\'异常观察\')';
+    sql += " AND h.expected_off_date IS NOT NULL AND h.expected_off_date > date('now', '+7 day') AND h.status IN ('已挂装','待调换','异常观察','待回收确认')";
   }
   sql += ' ORDER BY h.id DESC';
   const total = db.prepare(`SELECT COUNT(*) as c FROM (${sql})`).get(...params).c;
@@ -494,11 +494,12 @@ app.post('/api/recovery/request', authMiddleware, (req, res) => {
   if (pendingRecovery) return res.status(400).json({ message: '该挂装已存在待确认的回收申请' });
 
   const recordNo = generateRecordNo('RCV');
+  const originalStatus = hang.status;
   const tx = db.transaction(() => {
     db.prepare(`INSERT INTO recovery_records 
-      (record_no, hang_id, tag_id, garment_id, recover_operator_id, recover_time, status, remark) 
-      VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, '待回收确认', ?)`)
-      .run(recordNo, hangId, hang.tag_id, hang.garment_id, req.user.id, remark || '');
+      (record_no, hang_id, tag_id, garment_id, recover_operator_id, recover_time, status, original_status, remark) 
+      VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, '待回收确认', ?, ?)`)
+      .run(recordNo, hangId, hang.tag_id, hang.garment_id, req.user.id, originalStatus, remark || '');
     db.prepare('UPDATE hanging_records SET status = ? WHERE id = ?').run('待回收确认', hangId);
     updateTagStatus(hang.tag_id, '待回收确认');
   });
@@ -580,11 +581,12 @@ app.post('/api/recovery/reject', authMiddleware, (req, res) => {
   if (!recovery) return res.status(404).json({ message: '回收记录不存在' });
   if (recovery.status !== '待回收确认') return res.status(400).json({ message: '当前状态不可驳回' });
 
+  const restoredStatus = recovery.original_status || '已挂装';
   const tx = db.transaction(() => {
     db.prepare(`UPDATE recovery_records SET status = '已驳回', confirm_operator_id = ?, confirm_time = CURRENT_TIMESTAMP, remark = ? WHERE id = ?`)
       .run(req.user.id, `【驳回】${rejectReason}`, recoveryId);
-    db.prepare('UPDATE hanging_records SET status = ? WHERE id = ?').run('已挂装', recovery.hang_id);
-    updateTagStatus(recovery.tag_id, '已挂装');
+    db.prepare('UPDATE hanging_records SET status = ? WHERE id = ?').run(restoredStatus, recovery.hang_id);
+    updateTagStatus(recovery.tag_id, restoredStatus);
   });
   tx();
   res.json({ message: '已驳回回收申请' });
@@ -683,13 +685,13 @@ app.get('/api/statistics/overview', authMiddleware, (req, res) => {
   const unhandledMissing = db.prepare('SELECT COUNT(*) as c FROM missing_part_notes WHERE status != \'已处理\'').get().c;
 
   const expiringCount = db.prepare(`SELECT COUNT(*) as c FROM hanging_records 
-    WHERE status IN ('已挂装','待调换','异常观察') 
+    WHERE status IN ('已挂装','待调换','异常观察','待回收确认') 
     AND expected_off_date IS NOT NULL 
     AND expected_off_date >= date('now') 
     AND expected_off_date <= date('now', '+7 day')`).get().c;
 
   const overdueCount = db.prepare(`SELECT COUNT(*) as c FROM hanging_records 
-    WHERE status IN ('已挂装','待调换','异常观察') 
+    WHERE status IN ('已挂装','待调换','异常观察','待回收确认') 
     AND expected_off_date IS NOT NULL 
     AND expected_off_date < date('now')`).get().c;
 
@@ -719,7 +721,7 @@ app.get('/api/statistics/overview', authMiddleware, (req, res) => {
     LEFT JOIN hanging_records h ON r.hang_id = h.id
     LEFT JOIN display_areas da ON h.area_id = da.id
     LEFT JOIN users u ON r.recover_operator_id = u.id
-    WHERE r.status = '待回收确认' ORDER BY r.recover_time ASC LIMIT 20`).all();
+    WHERE r.status = '待回收确认' ORDER BY r.recover_time DESC LIMIT 20`).all();
 
   const frequentSwaps = db.prepare(`SELECT h.id as hang_id, t.tag_code, g.garment_name, COUNT(s.id) as swap_count,
     MIN(s.swap_time) as first_swap, MAX(s.swap_time) as last_swap
@@ -755,7 +757,7 @@ app.get('/api/statistics/overview', authMiddleware, (req, res) => {
     JOIN tags t ON h.tag_id = t.id
     JOIN garments g ON h.garment_id = g.id
     LEFT JOIN display_areas da ON h.area_id = da.id
-    WHERE h.status IN ('已挂装','待调换','异常观察') 
+    WHERE h.status IN ('已挂装','待调换','异常观察','待回收确认') 
     AND h.expected_off_date IS NOT NULL 
     AND h.expected_off_date <= date('now', '+7 day')
     ORDER BY days_left ASC, h.expected_off_date ASC
