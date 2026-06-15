@@ -52,4 +52,6 @@ export const createAnomalyTicketApi = (data) => request.post('/anomaly-tickets',
 export const handleAnomalyTicketApi = (id, data) => request.post(`/anomaly-tickets/${id}/handle`, data)
 export const handoverAnomalyTicketApi = (id, data) => request.post(`/anomaly-tickets/${id}/handover`, data)
 export const closeAnomalyTicketApi = (id, data) => request.post(`/anomaly-tickets/${id}/close`, data)
+export const createAnomalyFollowUpApi = (id, data) => request.post(`/anomaly-tickets/${id}/follow-up`, data)
+export const getAnomalyFollowUpsApi = (id) => request.get(`/anomaly-tickets/${id}/follow-ups`)
 export const getHangingAnomaliesApi = (id) => request.get(`/hanging-records/${id}/anomalies`)

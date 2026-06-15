@@ -208,6 +208,20 @@ function initDatabase() {
       FOREIGN KEY (to_user_id) REFERENCES users(id)
     );
 
+    CREATE TABLE IF NOT EXISTS anomaly_follow_ups (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_id INTEGER NOT NULL,
+      handler_id INTEGER,
+      follow_up_content TEXT NOT NULL,
+      images TEXT,
+      remark TEXT,
+      next_step_plan TEXT,
+      expected_next_date DATE,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (ticket_id) REFERENCES anomaly_tickets(id),
+      FOREIGN KEY (handler_id) REFERENCES users(id)
+    );
+
     CREATE TABLE IF NOT EXISTS operation_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER,
@@ -230,6 +244,8 @@ function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_anomaly_status ON anomaly_tickets(status);
     CREATE INDEX IF NOT EXISTS idx_anomaly_hang ON anomaly_tickets(hang_id);
     CREATE INDEX IF NOT EXISTS idx_anomaly_tag ON anomaly_tickets(tag_id);
+    CREATE INDEX IF NOT EXISTS idx_followup_ticket ON anomaly_follow_ups(ticket_id);
+    CREATE INDEX IF NOT EXISTS idx_followup_created ON anomaly_follow_ups(created_at);
   `);
 
   migrateDatabase();

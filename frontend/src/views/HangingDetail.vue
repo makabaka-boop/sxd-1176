@@ -246,33 +246,102 @@
             <el-button type="danger" :icon="Plus" size="small" @click="reportAnomaly" :disabled="!['已挂装','待调换','异常观察'].includes(detail?.status)">登记异常</el-button>
           </div>
           <el-empty v-if="!anomalyList?.length" description="暂无异常工单" />
-          <el-table v-else :data="anomalyList" stripe>
-            <el-table-column prop="ticket_no" label="工单编号" width="200" />
-            <el-table-column prop="anomaly_type" label="异常类型" width="110">
-              <template #default="{ row }"><el-tag type="danger" size="small">{{ row.anomaly_type }}</el-tag></template>
-            </el-table-column>
-            <el-table-column prop="description" label="问题描述" min-width="200" show-overflow-tooltip />
-            <el-table-column prop="expected_handle_date" label="期望处理" width="110" />
-            <el-table-column label="超期" width="80" align="center">
-              <template #default="{ row }">
-                <el-tag v-if="row.is_overdue" type="danger" size="small">已超期</el-tag>
-                <span v-else>-</span>
+          <div v-else>
+            <el-table :data="anomalyList" stripe>
+              <el-table-column prop="ticket_no" label="工单编号" width="200" />
+              <el-table-column prop="anomaly_type" label="异常类型" width="110">
+                <template #default="{ row }"><el-tag type="danger" size="small">{{ row.anomaly_type }}</el-tag>
               </template>
-            </el-table-column>
-            <el-table-column prop="reporter_name" label="登记人" width="90" />
-            <el-table-column prop="report_time" label="登记时间" width="170" />
-            <el-table-column prop="status" label="状态" width="90">
-              <template #default="{ row }"><el-tag :type="getAnomalyStatusTagType(row.status)" size="small">{{ row.status }}</el-tag></template>
-            </el-table-column>
-            <el-table-column prop="handler_name" label="处理人" width="90">
-              <template #default="{ row }">{{ row.handler_name || '-' }}</template>
-            </el-table-column>
-            <el-table-column label="操作" width="160" fixed="right">
-              <template #default="{ row }">
-                <el-button link type="primary" size="small" @click="goToAnomaly(row)">查看</el-button>
-              </template>
-            </el-table-column>
-          </el-table>
+              <el-table-column prop="description" label="问题描述" min-width="180" show-overflow-tooltip />
+              <el-table-column label="跟进次数" width="90" align="center">
+                <template #default="{ row }">
+                  <el-tag v-if="row.follow_up_count > 0" type="primary" size="small" effect="plain">{{ row.follow_up_count }}次</el-tag>
+                  <span v-else style="color:#c0c4cc;">0次</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="最近跟进" width="170">
+                <template #default="{ row }">
+                  <span v-if="row.last_follow_up_time">{{ row.last_follow_up_time }}</span>
+                  <span v-else style="color:#c0c4cc;">暂无跟进</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="下一步计划" min-width="160" show-overflow-tooltip>
+                <template #default="{ row }">
+                  <div>
+                    <span v-if="row.next_step_plan">{{ row.next_step_plan }}</span>
+                    <span v-else style="color:#c0c4cc;">未设置</span>
+                  </div>
+                  <div v-if="row.expected_next_date" style="font-size:12px;">
+                    <el-tag v-if="row.is_next_overdue" type="danger" size="small">需完成：{{ row.expected_next_date }}</el-tag>
+                    <el-tag v-else type="info" size="small" effect="plain">预计：{{ row.expected_next_date }}</el-tag>
+                  </div>
+                </template>
+              </el-table-column>
+              <el-table-column prop="expected_handle_date" label="期望处理" width="110" />
+              <el-table-column label="超期" width="80" align="center">
+                <template #default="{ row }">
+                  <el-tag v-if="row.is_overdue" type="danger" size="small">已超期</el-tag>
+                  <span v-else>-</span>
+                </template>
+              </el-table-column>
+              <el-table-column prop="reporter_name" label="登记人" width="90" />
+              <el-table-column prop="report_time" label="登记时间" width="170" />
+              <el-table-column prop="status" label="状态" width="90">
+                <template #default="{ row }"><el-tag :type="getAnomalyStatusTagType(row.status)" size="small">{{ row.status }}</el-tag>
+              </el-table-column>
+              <el-table-column prop="handler_name" label="处理人" width="90">
+                <template #default="{ row }">{{ row.handler_name || '-' }}</template>
+              </el-table-column>
+              <el-table-column label="操作" width="200" fixed="right">
+                <template #default="{ row }">
+                  <el-button link type="primary" size="small" @click="toggleAnomalyExpand(row)">
+                    {{ expandedAnomalyId === row.id ? '收起' : '详情' }}
+                  </el-button>
+                  <el-button link type="primary" size="small" @click="goToAnomaly(row)">工单页面</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+            <div v-for="row in anomalyList" :key="'expand-'+row.id" style="margin-bottom:12px;" v-show="expandedAnomalyId === row.id && row.followUps?.length">
+              <el-divider content-position="left">
+                <span style="font-size:13px; color:#606266;">工单 {{ row.ticket_no }} - 跟进时间线</span>
+              </el-divider>
+              <el-timeline>
+                <el-timeline-item
+                  v-for="f in row.followUps"
+                  :key="f.id"
+                  :timestamp="f.created_at"
+                  placement="top"
+                  type="primary"
+                  size="large"
+                >
+                  <el-card shadow="never" style="margin-bottom:8px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                      <b>跟进记录</b>
+                      <el-tag size="small" type="info">{{ f.handler_name || '系统' }}</el-tag>
+                    </div>
+                    <div style="margin-bottom:6px;">
+                      <b>跟进内容：</b>{{ f.follow_up_content }}
+                    </div>
+                    <div v-if="f.remark" style="margin-bottom:6px; color:#606266; font-size:13px;">
+                      <b>备注：</b>{{ f.remark }}
+                    </div>
+                    <div v-if="f.next_step_plan" style="margin-bottom:6px; padding:6px 8px; background:#ecf5ff; border-radius:4px; font-size:13px;">
+                      <b>下一步计划：</b>{{ f.next_step_plan }}
+                      <span v-if="f.expected_next_date" style="margin-left:10px;">
+                        <el-tag size="small" type="warning">预计：{{ f.expected_next_date }}</el-tag>
+                      </span>
+                    </div>
+                  </el-card>
+                </el-timeline-item>
+              </el-timeline>
+            </div>
+            <div v-for="row in anomalyList" :key="'empty-'+row.id" style="margin-bottom:12px;" v-show="expandedAnomalyId === row.id && !row.followUps?.length">
+              <el-divider content-position="left">
+                <span style="font-size:13px; color:#606266;">工单 {{ row.ticket_no }}</span>
+              </el-divider>
+              <el-empty description="暂无跟进记录" :image-size="60" />
+            </div>
+          </div>
         </el-tab-pane>
       </el-tabs>
     </div>
@@ -431,6 +500,7 @@ const anomalyTypes = ANOMALY_TYPE_OPTIONS
 const responsiblePersons = ref([])
 const anomalyList = ref([])
 const submitLoading = ref(false)
+const expandedAnomalyId = ref(null)
 
 const swapDialogVisible = ref(false)
 const swapFormRef = ref()
@@ -572,6 +642,10 @@ async function submitAnomaly() {
     anomalyDialogVisible.value = false
     loadDetail()
   } finally { submitLoading.value = false }
+}
+
+function toggleAnomalyExpand(row) {
+  expandedAnomalyId.value = expandedAnomalyId.value === row.id ? null : row.id
 }
 
 function goToAnomaly(row) {

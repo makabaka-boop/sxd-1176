@@ -688,6 +688,13 @@ app.get('/api/statistics/overview', authMiddleware, (req, res) => {
   const pendingAnomaly = db.prepare('SELECT COUNT(*) as c FROM anomaly_tickets WHERE status IN (\'待处理\',\'处理中\')').get().c;
   const overdueAnomaly = db.prepare(`SELECT COUNT(*) as c FROM anomaly_tickets 
     WHERE status != '已关闭' AND expected_handle_date IS NOT NULL AND expected_handle_date < date('now')`).get().c;
+  const needFollowUpAnomaly = db.prepare(`SELECT COUNT(*) as c FROM anomaly_tickets a
+    WHERE a.status != '已关闭' 
+    AND EXISTS (SELECT 1 FROM anomaly_follow_ups f WHERE f.ticket_id = a.id)
+    AND (SELECT MAX(f2.created_at) FROM anomaly_follow_ups f2 WHERE f2.ticket_id = a.id) < datetime('now', '-3 day')`).get().c;
+  const todayFollowUpAnomaly = db.prepare(`SELECT COUNT(*) as c FROM anomaly_tickets a
+    WHERE a.status != '已关闭' 
+    AND (SELECT f.expected_next_date FROM anomaly_follow_ups f WHERE f.ticket_id = a.id ORDER BY f.created_at DESC LIMIT 1) = date('now')`).get().c;
   const anomalyTypeStats = db.prepare(`SELECT anomaly_type, COUNT(*) as count 
     FROM anomaly_tickets GROUP BY anomaly_type ORDER BY count DESC`).all();
 
@@ -777,12 +784,36 @@ app.get('/api/statistics/overview', authMiddleware, (req, res) => {
     WHERE hang_time >= date('now', '-30 day')
     GROUP BY date(hang_time) ORDER BY date ASC`).all();
 
+  const needFollowUpList = db.prepare(`SELECT a.id, a.ticket_no, a.anomaly_type, a.description, a.status,
+    t.tag_code, g.garment_name,
+    (SELECT MAX(f.created_at) FROM anomaly_follow_ups f WHERE f.ticket_id = a.id) as last_follow_up_time,
+    julianday('now') - julianday((SELECT MAX(f.created_at) FROM anomaly_follow_ups f WHERE f.ticket_id = a.id)) as days_since_follow
+    FROM anomaly_tickets a
+    LEFT JOIN tags t ON a.tag_id = t.id
+    LEFT JOIN garments g ON a.garment_id = g.id
+    WHERE a.status != '已关闭' 
+    AND EXISTS (SELECT 1 FROM anomaly_follow_ups f WHERE f.ticket_id = a.id)
+    AND (SELECT MAX(f2.created_at) FROM anomaly_follow_ups f2 WHERE f2.ticket_id = a.id) < datetime('now', '-3 day')
+    ORDER BY days_since_follow DESC LIMIT 20`).all();
+
+  const todayFollowUpList = db.prepare(`SELECT a.id, a.ticket_no, a.anomaly_type, a.description, a.status,
+    t.tag_code, g.garment_name,
+    (SELECT f.next_step_plan FROM anomaly_follow_ups f WHERE f.ticket_id = a.id ORDER BY f.created_at DESC LIMIT 1) as next_step_plan,
+    (SELECT MAX(f.created_at) FROM anomaly_follow_ups f WHERE f.ticket_id = a.id) as last_follow_up_time
+    FROM anomaly_tickets a
+    LEFT JOIN tags t ON a.tag_id = t.id
+    LEFT JOIN garments g ON a.garment_id = g.id
+    WHERE a.status != '已关闭' 
+    AND (SELECT f.expected_next_date FROM anomaly_follow_ups f WHERE f.ticket_id = a.id ORDER BY f.created_at DESC LIMIT 1) = date('now')
+    ORDER BY a.id DESC LIMIT 20`).all();
+
   res.json({
     data: {
       summary: {
         totalTags, totalGarments, totalHanging, pendingRecovery, unhandledMissing,
         expiringCount, overdueCount, statusDistribution,
-        totalAnomaly, pendingAnomaly, overdueAnomaly
+        totalAnomaly, pendingAnomaly, overdueAnomaly,
+        needFollowUpAnomaly, todayFollowUpAnomaly
       },
       categoryDistribution,
       areaOccupancy,
@@ -793,7 +824,9 @@ app.get('/api/statistics/overview', authMiddleware, (req, res) => {
       anomalies: {
         frequentSwaps,
         overdueRecovery,
-        missingReviewGap
+        missingReviewGap,
+        needFollowUpList,
+        todayFollowUpList
       },
       trendData
     }
@@ -843,7 +876,7 @@ app.get('/api/anomaly-tickets/types', authMiddleware, (req, res) => {
 });
 
 app.get('/api/anomaly-tickets', authMiddleware, (req, res) => {
-  const { page = 1, pageSize = 20, status, responsibleId, anomalyType, tagCode, garmentCode, startDate, endDate, keyword, overdue, hangId } = req.query;
+  const { page = 1, pageSize = 20, status, responsibleId, anomalyType, tagCode, garmentCode, startDate, endDate, keyword, overdue, hangId, needFollowUp, todayNext } = req.query;
   let sql = `SELECT a.*,
     t.tag_code, g.garment_code, g.garment_name, c.category_name,
     h.record_no as hang_record_no, h.status as hang_status,
@@ -852,7 +885,11 @@ app.get('/api/anomaly-tickets', authMiddleware, (req, res) => {
     u1.real_name as reporter_name,
     u2.real_name as handler_name,
     u3.real_name as closer_name,
-    julianday(a.expected_handle_date) - julianday(date('now')) as days_left
+    julianday(a.expected_handle_date) - julianday(date('now')) as days_left,
+    (SELECT COUNT(*) FROM anomaly_follow_ups f WHERE f.ticket_id = a.id) as follow_up_count,
+    (SELECT MAX(f.created_at) FROM anomaly_follow_ups f WHERE f.ticket_id = a.id) as last_follow_up_time,
+    (SELECT f.next_step_plan FROM anomaly_follow_ups f WHERE f.ticket_id = a.id ORDER BY f.created_at DESC LIMIT 1) as next_step_plan,
+    (SELECT f.expected_next_date FROM anomaly_follow_ups f WHERE f.ticket_id = a.id ORDER BY f.created_at DESC LIMIT 1) as expected_next_date
     FROM anomaly_tickets a
     LEFT JOIN hanging_records h ON a.hang_id = h.id
     LEFT JOIN tags t ON a.tag_id = t.id
@@ -880,6 +917,14 @@ app.get('/api/anomaly-tickets', authMiddleware, (req, res) => {
     sql += " AND a.status != '已关闭' AND a.expected_handle_date IS NOT NULL AND a.expected_handle_date < date('now')";
   }
   if (hangId) { sql += ' AND a.hang_id = ?'; params.push(hangId); }
+  if (needFollowUp === 'true') {
+    sql += " AND a.status != '已关闭' AND (SELECT MAX(f.created_at) FROM anomaly_follow_ups f WHERE f.ticket_id = a.id) IS NOT NULL AND (SELECT MAX(f.created_at) FROM anomaly_follow_ups f WHERE f.ticket_id = a.id) < datetime('now', '-3 day')";
+  } else if (needFollowUp === 'none') {
+    sql += " AND a.status != '已关闭' AND NOT EXISTS (SELECT 1 FROM anomaly_follow_ups f WHERE f.ticket_id = a.id)";
+  }
+  if (todayNext === 'true') {
+    sql += " AND a.status != '已关闭' AND (SELECT f.expected_next_date FROM anomaly_follow_ups f WHERE f.ticket_id = a.id ORDER BY f.created_at DESC LIMIT 1) = date('now')";
+  }
   sql += ' ORDER BY a.id DESC';
 
   const total = db.prepare(`SELECT COUNT(*) as c FROM (${sql})`).get(...params).c;
@@ -894,7 +939,12 @@ app.get('/api/anomaly-tickets', authMiddleware, (req, res) => {
       overdue = exp?.status === 'overdue';
       daysLeft = exp?.daysLeft ?? null;
     }
-    return { ...row, is_overdue: overdue, days_left: daysLeft };
+    let nextOverdue = false;
+    if (row.expected_next_date && row.status !== '已关闭') {
+      const exp = getExpiryStatus(row.expected_next_date);
+      nextOverdue = exp?.status === 'overdue';
+    }
+    return { ...row, is_overdue: overdue, days_left: daysLeft, is_next_overdue: nextOverdue };
   });
 
   const statusCounts = db.prepare(`SELECT status, COUNT(*) as count FROM anomaly_tickets GROUP BY status`).all();
@@ -903,6 +953,19 @@ app.get('/api/anomaly-tickets', authMiddleware, (req, res) => {
 
   const overdueCount = db.prepare(`SELECT COUNT(*) as c FROM anomaly_tickets 
     WHERE status != '已关闭' AND expected_handle_date IS NOT NULL AND expected_handle_date < date('now')`).get().c;
+
+  const needFollowUpCount = db.prepare(`SELECT COUNT(*) as c FROM anomaly_tickets a
+    WHERE a.status != '已关闭' 
+    AND EXISTS (SELECT 1 FROM anomaly_follow_ups f WHERE f.ticket_id = a.id)
+    AND (SELECT MAX(f2.created_at) FROM anomaly_follow_ups f2 WHERE f2.ticket_id = a.id) < datetime('now', '-3 day')`).get().c;
+
+  const noFollowUpCount = db.prepare(`SELECT COUNT(*) as c FROM anomaly_tickets a
+    WHERE a.status != '已关闭' 
+    AND NOT EXISTS (SELECT 1 FROM anomaly_follow_ups f WHERE f.ticket_id = a.id)`).get().c;
+
+  const todayNextCount = db.prepare(`SELECT COUNT(*) as c FROM anomaly_tickets a
+    WHERE a.status != '已关闭' 
+    AND (SELECT f.expected_next_date FROM anomaly_follow_ups f WHERE f.ticket_id = a.id ORDER BY f.created_at DESC LIMIT 1) = date('now')`).get().c;
 
   const typeStats = db.prepare(`SELECT anomaly_type, COUNT(*) as count 
     FROM anomaly_tickets GROUP BY anomaly_type ORDER BY count DESC`).all();
@@ -916,6 +979,11 @@ app.get('/api/anomaly-tickets', authMiddleware, (req, res) => {
       closed: countsMap['已关闭'] || 0
     },
     overdue_count: overdueCount,
+    follow_up_counts: {
+      need_follow_up: needFollowUpCount,
+      no_follow_up: noFollowUpCount,
+      today_next: todayNextCount
+    },
     type_stats: typeStats
   });
 });
@@ -930,7 +998,9 @@ app.get('/api/anomaly-tickets/:id', authMiddleware, (req, res) => {
     u1.real_name as reporter_name,
     u2.real_name as handler_name,
     u3.real_name as closer_name,
-    julianday(a.expected_handle_date) - julianday(date('now')) as days_left
+    julianday(a.expected_handle_date) - julianday(date('now')) as days_left,
+    (SELECT COUNT(*) FROM anomaly_follow_ups f WHERE f.ticket_id = a.id) as follow_up_count,
+    (SELECT MAX(f.created_at) FROM anomaly_follow_ups f WHERE f.ticket_id = a.id) as last_follow_up_time
     FROM anomaly_tickets a
     LEFT JOIN hanging_records h ON a.hang_id = h.id
     LEFT JOIN tags t ON a.tag_id = t.id
@@ -954,7 +1024,16 @@ app.get('/api/anomaly-tickets/:id', authMiddleware, (req, res) => {
     LEFT JOIN users u2 ON hl.to_user_id = u2.id
     WHERE hl.ticket_id = ? ORDER BY hl.handover_time DESC`).all(req.params.id);
 
-  res.json({ data: { ...ticketWithExpiry, handoverLogs } });
+  const followUps = db.prepare(`SELECT f.*, u.real_name as handler_name
+    FROM anomaly_follow_ups f
+    LEFT JOIN users u ON f.handler_id = u.id
+    WHERE f.ticket_id = ? ORDER BY f.created_at DESC`).all(req.params.id);
+  const followUpsEnriched = followUps.map(row => ({
+    ...row,
+    images: row.images ? JSON.parse(row.images) : []
+  }));
+
+  res.json({ data: { ...ticketWithExpiry, handoverLogs, followUps: followUpsEnriched } });
 });
 
 app.post('/api/anomaly-tickets', authMiddleware, (req, res) => {
@@ -1084,10 +1163,62 @@ app.post('/api/anomaly-tickets/:id/close', authMiddleware, (req, res) => {
   res.json({ message: '异常工单已关闭，关联挂牌状态已根据剩余异常情况自动恢复' });
 });
 
+app.post('/api/anomaly-tickets/:id/follow-up', authMiddleware, (req, res) => {
+  const { followUpContent, images, remark, nextStepPlan, expectedNextDate } = req.body;
+  if (!followUpContent || !followUpContent.trim()) {
+    return res.status(400).json({ message: '跟进内容必填' });
+  }
+  const ticket = db.prepare('SELECT * FROM anomaly_tickets WHERE id = ?').get(req.params.id);
+  if (!ticket) return res.status(404).json({ message: '异常工单不存在' });
+  if (ticket.status === '已关闭') return res.status(400).json({ message: '已关闭的工单不可添加跟进记录' });
+
+  const tx = db.transaction(() => {
+    const info = db.prepare(`INSERT INTO anomaly_follow_ups 
+      (ticket_id, handler_id, follow_up_content, images, remark, next_step_plan, expected_next_date)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
+      req.params.id, req.user.id, followUpContent.trim(),
+      images ? JSON.stringify(images) : null,
+      remark || '',
+      nextStepPlan || '',
+      expectedNextDate || null
+    );
+
+    db.prepare(`UPDATE anomaly_tickets SET 
+      status = '处理中', handle_time = CURRENT_TIMESTAMP, current_handler_id = ?
+      WHERE id = ?`).run(req.user.id, req.params.id);
+
+    return info;
+  });
+  const result = tx();
+  logOperation(req.user.id, '添加异常跟进记录', 'anomaly_follow_up', result.lastInsertRowid, ticket.ticket_no);
+  res.json({ data: { id: result.lastInsertRowid }, message: '跟进记录已添加' });
+});
+
+app.get('/api/anomaly-tickets/:id/follow-ups', authMiddleware, (req, res) => {
+  const ticket = db.prepare('SELECT id FROM anomaly_tickets WHERE id = ?').get(req.params.id);
+  if (!ticket) return res.status(404).json({ message: '异常工单不存在' });
+
+  const data = db.prepare(`SELECT f.*, u.real_name as handler_name
+    FROM anomaly_follow_ups f
+    LEFT JOIN users u ON f.handler_id = u.id
+    WHERE f.ticket_id = ? ORDER BY f.created_at DESC`).all(req.params.id);
+
+  const enriched = data.map(row => ({
+    ...row,
+    images: row.images ? JSON.parse(row.images) : []
+  }));
+
+  res.json({ data: enriched });
+});
+
 app.get('/api/hanging-records/:id/anomalies', authMiddleware, (req, res) => {
   const data = db.prepare(`SELECT a.*,
     u1.real_name as reporter_name, u2.real_name as handler_name,
-    julianday(a.expected_handle_date) - julianday(date('now')) as days_left
+    julianday(a.expected_handle_date) - julianday(date('now')) as days_left,
+    (SELECT COUNT(*) FROM anomaly_follow_ups f WHERE f.ticket_id = a.id) as follow_up_count,
+    (SELECT MAX(f.created_at) FROM anomaly_follow_ups f WHERE f.ticket_id = a.id) as last_follow_up_time,
+    (SELECT f.next_step_plan FROM anomaly_follow_ups f WHERE f.ticket_id = a.id ORDER BY f.created_at DESC LIMIT 1) as next_step_plan,
+    (SELECT f.expected_next_date FROM anomaly_follow_ups f WHERE f.ticket_id = a.id ORDER BY f.created_at DESC LIMIT 1) as expected_next_date
     FROM anomaly_tickets a
     LEFT JOIN users u1 ON a.reporter_id = u1.id
     LEFT JOIN users u2 ON a.current_handler_id = u2.id
@@ -1098,9 +1229,35 @@ app.get('/api/hanging-records/:id/anomalies', authMiddleware, (req, res) => {
       const exp = getExpiryStatus(row.expected_handle_date);
       overdue = exp?.status === 'overdue';
     }
-    return { ...row, is_overdue: overdue };
+    let nextOverdue = false;
+    if (row.expected_next_date && row.status !== '已关闭') {
+      const exp = getExpiryStatus(row.expected_next_date);
+      nextOverdue = exp?.status === 'overdue';
+    }
+    return { ...row, is_overdue: overdue, is_next_overdue: nextOverdue };
   });
-  res.json({ data: enriched });
+
+  const ticketIds = enriched.map(t => t.id);
+  let allFollowUps = [];
+  if (ticketIds.length > 0) {
+    const placeholders = ticketIds.map(() => '?').join(',');
+    allFollowUps = db.prepare(`SELECT f.*, u.real_name as handler_name
+      FROM anomaly_follow_ups f
+      LEFT JOIN users u ON f.handler_id = u.id
+      WHERE f.ticket_id IN (${placeholders})
+      ORDER BY f.ticket_id, f.created_at DESC`).all(...ticketIds);
+    allFollowUps = allFollowUps.map(row => ({
+      ...row,
+      images: row.images ? JSON.parse(row.images) : []
+    }));
+  }
+
+  const enrichedWithFollowUps = enriched.map(ticket => ({
+    ...ticket,
+    followUps: allFollowUps.filter(f => f.ticket_id === ticket.id)
+  }));
+
+  res.json({ data: enrichedWithFollowUps });
 });
 
 app.use((err, req, res, next) => {

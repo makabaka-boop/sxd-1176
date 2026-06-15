@@ -13,7 +13,7 @@
     </el-row>
 
     <el-row :gutter="16" class="mb-16">
-      <el-col :span="8" v-for="s in anomalyCards" :key="s.label">
+      <el-col :span="4" v-for="s in anomalyCards" :key="s.label">
         <div class="stat-card flex-between" :style="{ cursor: s.click ? 'pointer' : 'default', borderLeft: '4px solid #f56c6c' }" @click="s.click && s.click()">
           <div>
             <div class="stat-label">{{ s.label }}</div>
@@ -95,6 +95,51 @@
                 <el-table-column label="操作" width="90" align="center">
                   <template #default="{ row }">
                     <el-button link type="primary" size="small" @click="$router.push(`/hanging/${row.hang_id}`)">查看</el-button>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </el-tab-pane>
+            <el-tab-pane label="待跟进异常" name="needFollowUp">
+              <el-empty v-if="!stats.anomalies?.needFollowUpList?.length" description="暂无待跟进异常" :image-size="80" />
+              <el-table v-else :data="stats.anomalies.needFollowUpList" size="small" stripe>
+                <el-table-column prop="ticket_no" label="工单编号" width="180" />
+                <el-table-column prop="anomaly_type" label="类型" width="100">
+                  <template #default="{ row }"><el-tag type="danger" size="small">{{ row.anomaly_type }}</el-tag></template>
+                </el-table-column>
+                <el-table-column label="对象" show-overflow-tooltip>
+                  <template #default="{ row }">{{ row.tag_code || row.garment_name || '-' }}</template>
+                </el-table-column>
+                <el-table-column label="未跟进天数" width="100" align="center">
+                  <template #default="{ row }">
+                    <el-tag type="warning" size="small">{{ Math.floor(row.days_since_follow) }}天</el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="最近跟进" width="160">
+                  <template #default="{ row }">{{ row.last_follow_up_time || '-' }}</template>
+                </el-table-column>
+                <el-table-column label="操作" width="80" align="center">
+                  <template #default="{ row }">
+                    <el-button link type="primary" size="small" @click="$router.push(`/anomaly-tickets?needFollowUp=true`)">处理</el-button>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </el-tab-pane>
+            <el-tab-pane label="今日需跟进" name="todayFollowUp">
+              <el-empty v-if="!stats.anomalies?.todayFollowUpList?.length" description="今日暂无需跟进异常" :image-size="80" />
+              <el-table v-else :data="stats.anomalies.todayFollowUpList" size="small" stripe>
+                <el-table-column prop="ticket_no" label="工单编号" width="180" />
+                <el-table-column prop="anomaly_type" label="类型" width="100">
+                  <template #default="{ row }"><el-tag type="danger" size="small">{{ row.anomaly_type }}</el-tag></template>
+                </el-table-column>
+                <el-table-column label="对象" show-overflow-tooltip>
+                  <template #default="{ row }">{{ row.tag_code || row.garment_name || '-' }}</template>
+                </el-table-column>
+                <el-table-column label="下一步计划" min-width="160" show-overflow-tooltip>
+                  <template #default="{ row }">{{ row.next_step_plan || '-' }}</template>
+                </el-table-column>
+                <el-table-column label="操作" width="80" align="center">
+                  <template #default="{ row }">
+                    <el-button link type="primary" size="small" @click="$router.push(`/anomaly-tickets?todayNext=true`)">处理</el-button>
                   </template>
                 </el-table-column>
               </el-table>
@@ -201,7 +246,9 @@ async function loadData() {
   anomalyCards.value = [
     { label: '异常工单总数', value: stats.summary.totalAnomaly || 0, color: '#909399', icon: CircleCheck, click: () => router.push('/anomaly-tickets') },
     { label: '待处理异常', value: stats.summary.pendingAnomaly || 0, color: '#f56c6c', icon: Warning, click: () => router.push('/anomaly-tickets?status=待处理') },
-    { label: '超期异常', value: stats.summary.overdueAnomaly || 0, color: '#f56c6c', icon: Bell, click: () => router.push('/anomaly-tickets?overdue=true') }
+    { label: '超期异常', value: stats.summary.overdueAnomaly || 0, color: '#f56c6c', icon: Bell, click: () => router.push('/anomaly-tickets?overdue=true') },
+    { label: '待跟进异常', value: stats.summary.needFollowUpAnomaly || 0, color: '#e6a23c', icon: Clock, click: () => router.push('/anomaly-tickets?needFollowUp=true') },
+    { label: '今日需跟进', value: stats.summary.todayFollowUpAnomaly || 0, color: '#409eff', icon: Bell, click: () => router.push('/anomaly-tickets?todayNext=true') }
   ]
   await nextTick()
   renderCharts()
