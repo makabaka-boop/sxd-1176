@@ -239,16 +239,17 @@
         <el-form-item label="处理图片">
           <el-upload
             v-model:file-list="handleForm.imageFiles"
-            action="#"
+            :action="''"
             list-type="picture-card"
             :auto-upload="false"
             :limit="6"
             accept="image/*"
+            :before-upload="() => false"
             style="margin-bottom:8px;"
           >
             <el-icon><Plus /></el-icon>
           </el-upload>
-          <div style="color:#909399; font-size:12px;">最多上传6张图片</div>
+          <div style="color:#909399; font-size:12px;">最多上传6张图片（本地预览，暂不支持实际上传）</div>
         </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="handleForm.remark" type="textarea" :rows="2" placeholder="其他需要补充说明的内容（可选）" />

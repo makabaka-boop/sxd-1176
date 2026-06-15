@@ -250,8 +250,8 @@
             <el-table :data="anomalyList" stripe>
               <el-table-column prop="ticket_no" label="工单编号" width="200" />
               <el-table-column prop="anomaly_type" label="异常类型" width="110">
-                <template #default="{ row }"><el-tag type="danger" size="small">{{ row.anomaly_type }}</el-tag>
-              </template>
+                <template #default="{ row }"><el-tag type="danger" size="small">{{ row.anomaly_type }}</el-tag></template>
+              </el-table-column>
               <el-table-column prop="description" label="问题描述" min-width="180" show-overflow-tooltip />
               <el-table-column label="跟进次数" width="90" align="center">
                 <template #default="{ row }">
@@ -287,7 +287,7 @@
               <el-table-column prop="reporter_name" label="登记人" width="90" />
               <el-table-column prop="report_time" label="登记时间" width="170" />
               <el-table-column prop="status" label="状态" width="90">
-                <template #default="{ row }"><el-tag :type="getAnomalyStatusTagType(row.status)" size="small">{{ row.status }}</el-tag>
+                <template #default="{ row }"><el-tag :type="getAnomalyStatusTagType(row.status)" size="small">{{ row.status }}</el-tag></template>
               </el-table-column>
               <el-table-column prop="handler_name" label="处理人" width="90">
                 <template #default="{ row }">{{ row.handler_name || '-' }}</template>
