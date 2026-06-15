@@ -172,8 +172,8 @@
         样衣：<b>{{ anomalyGarment?.garment_name }}</b>（{{ anomalyGarment?.garment_code }}）
       </el-alert>
       <el-form :model="anomalyForm" :rules="anomalyRules" ref="anomalyFormRef" label-width="100px">
-        <el-form-item label="关联挂装">
-          <el-select v-model="anomalyForm.hangId" filterable clearable style="width:100%;" placeholder="选择该样衣的已挂装记录">
+        <el-form-item label="关联挂装" prop="hangId">
+          <el-select v-model="anomalyForm.hangId" filterable style="width:100%;" placeholder="选择该样衣的已挂装记录">
             <el-option v-for="h in garmentHangingOptions" :key="h.id" :label="`${h.tag_code} - ${h.area_name} L${h.layer_no}-P${h.position_no}`" :value="h.id" />
           </el-select>
         </el-form-item>
@@ -271,6 +271,7 @@ const anomalyLoading = ref(false)
 const garmentHangingOptions = ref([])
 const anomalyForm = reactive({ hangId: '', anomalyType: '', description: '', responsibleId: '', expectedHandleDate: '' })
 const anomalyRules = {
+  hangId: [{ required: true, message: '请选择关联挂装记录', trigger: 'change' }],
   anomalyType: [{ required: true, message: '请选择异常类型', trigger: 'change' }],
   description: [{ required: true, message: '请填写问题描述', trigger: 'blur' }]
 }
@@ -363,12 +364,16 @@ async function submitHang() {
 
 async function openAnomalyDialog(row) {
   anomalyGarment.value = row
-  Object.assign(anomalyForm, { hangId: '', anomalyType: '', description: '', responsibleId: responsiblePersons.value[0]?.id || '', expectedHandleDate: '' })
+  Object.assign(anomalyForm, { hangId: '', anomalyType: '', description: '', responsibleId: '', expectedHandleDate: '' })
   garmentHangingOptions.value = []
   try {
-    const res = await getHangingRecordsApi({ pageSize: 200, keyword: row.garment_code })
-    garmentHangingOptions.value = res.data.filter(h => h.garment_id === row.id || true)
+    const res = await getHangingRecordsApi({ pageSize: 200, status: '已挂装' })
+    garmentHangingOptions.value = res.data.filter(h => h.garment_id === row.id)
   } catch (e) {}
+  if (garmentHangingOptions.value.length === 0) {
+    ElMessage.warning('该样衣暂无已挂装记录，无法登记异常')
+    return
+  }
   anomalyDialogVisible.value = true
 }
 

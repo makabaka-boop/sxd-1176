@@ -22,6 +22,9 @@
     </div>
 
     <div class="filter-card">
+      <el-alert v-if="filters.hangId" type="info" :closable="true" @close="filters.hangId = ''; loadData(1)" style="margin-bottom:12px;">
+        正在筛选挂装记录 #{{ filters.hangId }} 的异常工单，点击关闭查看全部
+      </el-alert>
       <el-form :inline="true" :model="filters" @submit.prevent>
         <el-form-item label="关键词">
           <el-input v-model="filters.keyword" placeholder="工单号/描述/挂牌/款号" clearable style="width:200px;" />
@@ -136,7 +139,7 @@
 
     <el-dialog v-model="createDialogVisible" title="登记异常工单" width="560px">
       <el-form :model="createForm" :rules="createRules" ref="createFormRef" label-width="100px">
-        <el-form-item label="关联挂装">
+        <el-form-item label="关联挂装" prop="hangId">
           <el-select v-model="createForm.hangId" filterable clearable style="width:100%;" @change="onHangChange" placeholder="选择已挂装记录">
             <el-option v-for="h in hangOptions" :key="h.id" :label="`${h.tag_code} - ${h.garment_name}`" :value="h.id" />
           </el-select>
@@ -272,7 +275,7 @@ const overdueCount = ref(0)
 
 const filters = reactive({
   page: 1, pageSize: 20, keyword: '', status: '', responsibleId: '',
-  anomalyType: '', tagCode: '', garmentCode: '', startDate: '', endDate: '', overdue: ''
+  anomalyType: '', tagCode: '', garmentCode: '', startDate: '', endDate: '', overdue: '', hangId: ''
 })
 
 function quickFilter(field, value) {
@@ -302,7 +305,8 @@ async function loadData(page) {
 }
 
 function resetFilters() {
-  Object.assign(filters, { page: 1, keyword: '', status: '', responsibleId: '', anomalyType: '', tagCode: '', garmentCode: '', overdue: '' })
+  const savedHangId = filters.hangId
+  Object.assign(filters, { page: 1, keyword: '', status: '', responsibleId: '', anomalyType: '', tagCode: '', garmentCode: '', overdue: '', hangId: savedHangId })
   dateRange.value = []
   loadData()
 }
@@ -311,6 +315,7 @@ const createDialogVisible = ref(false)
 const createFormRef = ref()
 const createForm = reactive({ hangId: '', anomalyType: '', description: '', responsibleId: '', expectedHandleDate: '' })
 const createRules = {
+  hangId: [{ required: true, message: '请选择关联挂装记录', trigger: 'change' }],
   anomalyType: [{ required: true, message: '请选择异常类型', trigger: 'change' }],
   description: [{ required: true, message: '请填写问题描述', trigger: 'blur' }]
 }
@@ -425,6 +430,7 @@ onMounted(async () => {
   if (route.query.status) filters.status = route.query.status
   if (route.query.anomalyType) filters.anomalyType = route.query.anomalyType
   if (route.query.overdue === 'true') filters.overdue = 'true'
+  if (route.query.hangId) filters.hangId = route.query.hangId
   loadData()
 })
 </script>

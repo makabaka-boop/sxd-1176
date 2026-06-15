@@ -13,7 +13,7 @@
         <el-button type="warning" :icon="RefreshLeft" @click="requestRecovery" :disabled="!['已挂装','待调换','异常观察'].includes(detail.status)">申请回收</el-button>
         <el-button type="danger" :icon="Warning" @click="reportMissing" :disabled="!['已挂装','异常观察'].includes(detail.status)">缺件上报</el-button>
         <el-button type="danger" :icon="CircleCheck" @click="reportAnomaly" :disabled="!['已挂装','待调换','异常观察'].includes(detail.status)">登记异常</el-button>
-        <el-button v-if="(anomalyList || []).length > 0" link type="primary" @click="$router.push('/anomaly-tickets')">
+        <el-button v-if="(anomalyList || []).length > 0" link type="primary" @click="$router.push(`/anomaly-tickets?hangId=${detail.id}`)">
           <el-badge :value="(anomalyList || []).filter(a => a.status !== '已关闭').length" :max="99" class="anomaly-badge">
             关联异常工单
           </el-badge>
@@ -409,7 +409,7 @@
 
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft, Switch, RefreshLeft, Warning, Plus, InfoFilled, CircleCheck } from '@element-plus/icons-vue'
 import { getStatusTagType, MISSING_TYPE_OPTIONS, getExpiryStatusTagType, getExpiryStatusLabel, getDaysLeftText, ANOMALY_TYPE_OPTIONS, getAnomalyStatusTagType } from '@/utils/constants'
@@ -420,6 +420,7 @@ import {
 } from '@/api'
 
 const route = useRoute()
+const router = useRouter()
 const loading = ref(false)
 const detail = ref(null)
 const activeTab = ref('swap')
@@ -574,7 +575,7 @@ async function submitAnomaly() {
 }
 
 function goToAnomaly(row) {
-  window.open(`/anomaly-tickets`, '_blank')
+  router.push(`/anomaly-tickets?hangId=${detail.value.id}`)
 }
 
 onMounted(loadDetail)

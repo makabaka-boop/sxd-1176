@@ -843,7 +843,7 @@ app.get('/api/anomaly-tickets/types', authMiddleware, (req, res) => {
 });
 
 app.get('/api/anomaly-tickets', authMiddleware, (req, res) => {
-  const { page = 1, pageSize = 20, status, responsibleId, anomalyType, tagCode, garmentCode, startDate, endDate, keyword, overdue } = req.query;
+  const { page = 1, pageSize = 20, status, responsibleId, anomalyType, tagCode, garmentCode, startDate, endDate, keyword, overdue, hangId } = req.query;
   let sql = `SELECT a.*,
     t.tag_code, g.garment_code, g.garment_name, c.category_name,
     h.record_no as hang_record_no, h.status as hang_status,
@@ -879,6 +879,7 @@ app.get('/api/anomaly-tickets', authMiddleware, (req, res) => {
   if (overdue === 'true') {
     sql += " AND a.status != '已关闭' AND a.expected_handle_date IS NOT NULL AND a.expected_handle_date < date('now')";
   }
+  if (hangId) { sql += ' AND a.hang_id = ?'; params.push(hangId); }
   sql += ' ORDER BY a.id DESC';
 
   const total = db.prepare(`SELECT COUNT(*) as c FROM (${sql})`).get(...params).c;
@@ -961,29 +962,28 @@ app.post('/api/anomaly-tickets', authMiddleware, (req, res) => {
   if (!anomalyType || !description) {
     return res.status(400).json({ message: '异常类型和问题描述必填' });
   }
-
-  let tagId = null, garmentId = null, hang = null;
-  if (hangId) {
-    hang = db.prepare('SELECT * FROM hanging_records WHERE id = ?').get(hangId);
-    if (!hang) return res.status(404).json({ message: '挂装记录不存在' });
-    if (!['已挂装', '待调换', '异常观察'].includes(hang.status)) {
-      return res.status(400).json({ message: `当前挂装状态"${hang.status}"不允许发起异常登记` });
-    }
-    tagId = hang.tag_id;
-    garmentId = hang.garment_id;
+  if (!hangId) {
+    return res.status(400).json({ message: '请选择关联挂装记录' });
   }
+
+  const hang = db.prepare('SELECT * FROM hanging_records WHERE id = ?').get(hangId);
+  if (!hang) return res.status(404).json({ message: '挂装记录不存在' });
+  if (!['已挂装', '待调换', '异常观察'].includes(hang.status)) {
+    return res.status(400).json({ message: `当前挂装状态"${hang.status}"不允许发起异常登记` });
+  }
+
+  const tagId = hang.tag_id;
+  const garmentId = hang.garment_id;
 
   const ticketNo = generateRecordNo('EXC');
   const tx = db.transaction(() => {
     const info = db.prepare(`INSERT INTO anomaly_tickets 
       (ticket_no, hang_id, tag_id, garment_id, anomaly_type, description, responsible_id, reporter_id, expected_handle_date, status, current_handler_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '待处理', ?)`)
-      .run(ticketNo, hangId || null, tagId, garmentId, anomalyType, description, responsibleId || null, req.user.id, expectedHandleDate || null, req.user.id);
+      .run(ticketNo, hangId, tagId, garmentId, anomalyType, description, responsibleId || null, req.user.id, expectedHandleDate || null, req.user.id);
 
-    if (hang) {
-      db.prepare('UPDATE hanging_records SET status = ? WHERE id = ?').run('异常观察', hangId);
-      updateTagStatus(tagId, '异常观察');
-    }
+    db.prepare('UPDATE hanging_records SET status = ? WHERE id = ?').run('异常观察', hangId);
+    updateTagStatus(tagId, '异常观察');
     return info;
   });
   const result = tx();
@@ -998,10 +998,13 @@ app.post('/api/anomaly-tickets/:id/handle', authMiddleware, (req, res) => {
   if (ticket.status === '已关闭') return res.status(400).json({ message: '已关闭的工单不可处理' });
 
   const tx = db.transaction(() => {
+    const newResult = ticket.handle_result
+      ? `${ticket.handle_result}\n${handleResult || ''}`
+      : (handleResult || '');
     db.prepare(`UPDATE anomaly_tickets SET 
-      status = '处理中', handle_result = COALESCE(NULLIF(handle_result, ''), handle_result), 
+      status = '处理中', handle_result = ?, 
       handle_time = CURRENT_TIMESTAMP, current_handler_id = ?
-      WHERE id = ?`).run(req.user.id, req.params.id);
+      WHERE id = ?`).run(newResult, req.user.id, req.params.id);
   });
   tx();
   logOperation(req.user.id, '处理异常工单', 'anomaly_ticket', req.params.id, ticket.ticket_no);
