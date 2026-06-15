@@ -60,3 +60,37 @@ export function getStatusTagType(status) {
   }
   return map[status] || 'info'
 }
+
+export const EXPIRY_STATUS_OPTIONS = [
+  { value: 'expiring', label: '即将到期', type: 'warning' },
+  { value: 'overdue', label: '已超期', type: 'danger' },
+  { value: 'normal', label: '正常', type: 'success' }
+]
+
+export function getExpiryStatusTagType(status) {
+  const map = {
+    'expiring': 'warning',
+    'overdue': 'danger',
+    'normal': 'success'
+  }
+  return map[status] || 'info'
+}
+
+export function getExpiryStatusLabel(status) {
+  const map = {
+    'expiring': '即将到期',
+    'overdue': '已超期',
+    'normal': '正常'
+  }
+  return map[status] || '未设置'
+}
+
+export function getDaysLeftText(daysLeft, expiryStatus) {
+  if (daysLeft === null || daysLeft === undefined) return '-'
+  if (expiryStatus === 'overdue') {
+    return `已超期${Math.abs(daysLeft)}天`
+  }
+  if (daysLeft === 0) return '今天到期'
+  if (daysLeft === 1) return '明天到期'
+  return `剩余${daysLeft}天`
+}

@@ -264,8 +264,18 @@ function updateTagStatus(tagId, status) {
   }
 }
 
+function getExpiryStatus(expectedOffDate) {
+  if (!expectedOffDate) return null;
+  const today = dayjs().startOf('day');
+  const expireDate = dayjs(expectedOffDate).startOf('day');
+  const daysLeft = expireDate.diff(today, 'day');
+  if (daysLeft < 0) return { status: 'overdue', daysLeft };
+  if (daysLeft <= 7) return { status: 'expiring', daysLeft };
+  return { status: 'normal', daysLeft };
+}
+
 app.post('/api/hanging', authMiddleware, (req, res) => {
-  const { tagId, garmentId, areaId, layerNo, positionNo, responsibleId, remark } = req.body;
+  const { tagId, garmentId, areaId, layerNo, positionNo, responsibleId, remark, expectedOffDate } = req.body;
   if (!tagId || !garmentId || !areaId || !layerNo || !positionNo || !responsibleId) {
     return res.status(400).json({ message: '必填项缺失' });
   }
@@ -300,9 +310,9 @@ app.post('/api/hanging', authMiddleware, (req, res) => {
   const recordNo = generateRecordNo('HANG');
   const tx = db.transaction(() => {
     const hangInfo = db.prepare(`INSERT INTO hanging_records 
-      (record_no, tag_id, garment_id, area_id, layer_no, position_no, responsible_id, operator_id, status, remark) 
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, '已挂装', ?)`)
-      .run(recordNo, tagId, garmentId, areaId, layerNo, positionNo, responsibleId, req.user.id, remark || '');
+      (record_no, tag_id, garment_id, area_id, layer_no, position_no, responsible_id, operator_id, status, remark, expected_off_date) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, '已挂装', ?, ?)`)
+      .run(recordNo, tagId, garmentId, areaId, layerNo, positionNo, responsibleId, req.user.id, remark || '', expectedOffDate || null);
     updateTagStatus(tagId, '已挂装');
     return hangInfo;
   });
@@ -312,7 +322,7 @@ app.post('/api/hanging', authMiddleware, (req, res) => {
 });
 
 app.get('/api/hanging-records', authMiddleware, (req, res) => {
-  const { page = 1, pageSize = 20, categoryId, areaId, responsibleId, status, startDate, endDate, hasMissing, keyword } = req.query;
+  const { page = 1, pageSize = 20, categoryId, areaId, responsibleId, status, startDate, endDate, hasMissing, keyword, expiryStatus } = req.query;
   let sql = `SELECT h.*, 
     t.tag_code, t.rfid_code, tt.template_name,
     g.garment_code, g.garment_name, g.season, g.color, c.category_name,
@@ -320,7 +330,8 @@ app.get('/api/hanging-records', authMiddleware, (req, res) => {
     rp.person_name, rp.person_code, rp.department,
     u.real_name as operator_name,
     (SELECT COUNT(*) FROM missing_part_notes m WHERE m.hang_id = h.id AND m.status != '已处理') as unresolved_missing_count,
-    (SELECT COUNT(*) FROM swap_records s WHERE s.original_hang_id = h.id) as swap_count
+    (SELECT COUNT(*) FROM swap_records s WHERE s.original_hang_id = h.id) as swap_count,
+    julianday(h.expected_off_date) - julianday(date('now')) as days_left
     FROM hanging_records h
     LEFT JOIN tags t ON h.tag_id = t.id
     LEFT JOIN tag_templates tt ON t.template_id = tt.id
@@ -346,10 +357,21 @@ app.get('/api/hanging-records', authMiddleware, (req, res) => {
   } else if (hasMissing === 'false') {
     sql += ' AND NOT EXISTS (SELECT 1 FROM missing_part_notes m WHERE m.hang_id = h.id AND m.status != \'已处理\')';
   }
+  if (expiryStatus === 'overdue') {
+    sql += ' AND h.expected_off_date IS NOT NULL AND h.expected_off_date < date(\'now\') AND h.status IN (\'已挂装\',\'待调换\',\'异常观察\')';
+  } else if (expiryStatus === 'expiring') {
+    sql += ' AND h.expected_off_date IS NOT NULL AND h.expected_off_date >= date(\'now\') AND h.expected_off_date <= date(\'now\', \'+7 day\') AND h.status IN (\'已挂装\',\'待调换\',\'异常观察\')';
+  } else if (expiryStatus === 'normal') {
+    sql += ' AND h.expected_off_date IS NOT NULL AND h.expected_off_date > date(\'now\', \'+7 day\') AND h.status IN (\'已挂装\',\'待调换\',\'异常观察\')';
+  }
   sql += ' ORDER BY h.id DESC';
   const total = db.prepare(`SELECT COUNT(*) as c FROM (${sql})`).get(...params).c;
   const offset = (page - 1) * pageSize;
-  const data = db.prepare(sql + ' LIMIT ? OFFSET ?').all(...params, Number(pageSize), offset);
+  const rawData = db.prepare(sql + ' LIMIT ? OFFSET ?').all(...params, Number(pageSize), offset);
+  const data = rawData.map(row => {
+    const expiry = getExpiryStatus(row.expected_off_date);
+    return { ...row, expiry_status: expiry?.status || null, days_left: expiry?.daysLeft ?? null };
+  });
   res.json({ data, total, page: Number(page), pageSize: Number(pageSize) });
 });
 
@@ -359,7 +381,8 @@ app.get('/api/hanging-records/:id', authMiddleware, (req, res) => {
     g.garment_code, g.garment_name, g.season, g.color, g.size, g.fabric, g.description, c.category_name,
     da.area_name, da.area_code, da.floor,
     rp.person_name, rp.person_code, rp.department, rp.phone, rp.email,
-    u.real_name as operator_name
+    u.real_name as operator_name,
+    julianday(h.expected_off_date) - julianday(date('now')) as days_left
     FROM hanging_records h
     LEFT JOIN tags t ON h.tag_id = t.id
     LEFT JOIN tag_templates tt ON t.template_id = tt.id
@@ -370,6 +393,9 @@ app.get('/api/hanging-records/:id', authMiddleware, (req, res) => {
     LEFT JOIN users u ON h.operator_id = u.id
     WHERE h.id = ?`).get(req.params.id);
   if (!hang) return res.status(404).json({ message: '记录不存在' });
+
+  const expiry = getExpiryStatus(hang.expected_off_date);
+  const hangWithExpiry = { ...hang, expiry_status: expiry?.status || null, days_left: expiry?.daysLeft ?? null };
 
   const swaps = db.prepare(`SELECT s.*,
     og.garment_code as original_garment_code, og.garment_name as original_garment_name,
@@ -392,11 +418,11 @@ app.get('/api/hanging-records/:id', authMiddleware, (req, res) => {
     LEFT JOIN users u2 ON m.handler_id = u2.id
     WHERE m.hang_id = ? ORDER BY m.report_time DESC`).all(req.params.id);
 
-  res.json({ data: { ...hang, swaps, missingParts } });
+  res.json({ data: { ...hangWithExpiry, swaps, missingParts } });
 });
 
 app.post('/api/swap', authMiddleware, (req, res) => {
-  const { originalHangId, newGarmentId, newAreaId, newLayerNo, newPositionNo, swapReason } = req.body;
+  const { originalHangId, newGarmentId, newAreaId, newLayerNo, newPositionNo, swapReason, expectedOffDate } = req.body;
   if (!originalHangId || !newGarmentId) return res.status(400).json({ message: '必填项缺失' });
 
   const originalHang = db.prepare('SELECT * FROM hanging_records WHERE id = ?').get(originalHangId);
@@ -434,18 +460,19 @@ app.post('/api/swap', authMiddleware, (req, res) => {
   const frequentWarning = recentSwaps >= 3 ? `警告：该挂牌近7天已调换${recentSwaps}次，调换过频` : null;
 
   const recordNo = generateRecordNo('SWP');
+  const finalExpectedOffDate = expectedOffDate || originalHang.expected_off_date;
   const tx = db.transaction(() => {
     const swapInfo = db.prepare(`INSERT INTO swap_records 
       (record_no, original_hang_id, original_garment_id, original_area_id, original_layer_no, original_position_no,
-       new_garment_id, new_area_id, new_layer_no, new_position_no, swap_reason, operator_id) 
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+       new_garment_id, new_area_id, new_layer_no, new_position_no, swap_reason, operator_id, expected_off_date) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(recordNo, originalHangId, originalHang.garment_id, originalHang.area_id, originalHang.layer_no, originalHang.position_no,
-           newGarmentId, newAreaId || null, newLayerNo || null, newPositionNo || null, swapReason || '', req.user.id);
+           newGarmentId, newAreaId || null, newLayerNo || null, newPositionNo || null, swapReason || '', req.user.id, finalExpectedOffDate);
 
     db.prepare(`UPDATE hanging_records SET 
-      garment_id = ?, area_id = ?, layer_no = ?, position_no = ?, status = '已挂装' 
+      garment_id = ?, area_id = ?, layer_no = ?, position_no = ?, status = '已挂装', expected_off_date = ?
       WHERE id = ?`)
-      .run(newGarmentId, finalAreaId, finalLayerNo, finalPositionNo, originalHangId);
+      .run(newGarmentId, finalAreaId, finalLayerNo, finalPositionNo, finalExpectedOffDate, originalHangId);
     return swapInfo;
   });
   tx();
@@ -655,6 +682,17 @@ app.get('/api/statistics/overview', authMiddleware, (req, res) => {
   const pendingRecovery = db.prepare('SELECT COUNT(*) as c FROM recovery_records WHERE status = \'待回收确认\'').get().c;
   const unhandledMissing = db.prepare('SELECT COUNT(*) as c FROM missing_part_notes WHERE status != \'已处理\'').get().c;
 
+  const expiringCount = db.prepare(`SELECT COUNT(*) as c FROM hanging_records 
+    WHERE status IN ('已挂装','待调换','异常观察') 
+    AND expected_off_date IS NOT NULL 
+    AND expected_off_date >= date('now') 
+    AND expected_off_date <= date('now', '+7 day')`).get().c;
+
+  const overdueCount = db.prepare(`SELECT COUNT(*) as c FROM hanging_records 
+    WHERE status IN ('已挂装','待调换','异常观察') 
+    AND expected_off_date IS NOT NULL 
+    AND expected_off_date < date('now')`).get().c;
+
   const statusDistribution = db.prepare(`SELECT status, COUNT(*) as count FROM tags GROUP BY status`).all();
 
   const categoryDistribution = db.prepare(`SELECT p.id, p.category_name, COUNT(g.id) as count
@@ -710,6 +748,19 @@ app.get('/api/statistics/overview', authMiddleware, (req, res) => {
     WHERE m.status = '未处理' AND julianday('now') - julianday(m.report_time) > 3
     ORDER BY pending_days DESC`).all();
 
+  const expiryReminders = db.prepare(`SELECT h.id as hang_id, h.record_no, h.expected_off_date,
+    t.tag_code, g.garment_name, g.garment_code, da.area_name,
+    julianday(h.expected_off_date) - julianday(date('now')) as days_left
+    FROM hanging_records h
+    JOIN tags t ON h.tag_id = t.id
+    JOIN garments g ON h.garment_id = g.id
+    LEFT JOIN display_areas da ON h.area_id = da.id
+    WHERE h.status IN ('已挂装','待调换','异常观察') 
+    AND h.expected_off_date IS NOT NULL 
+    AND h.expected_off_date <= date('now', '+7 day')
+    ORDER BY days_left ASC, h.expected_off_date ASC
+    LIMIT 20`).all();
+
   const trendData = db.prepare(`SELECT 
     date(hang_time) as date,
     SUM(CASE WHEN status IN ('已挂装','待调换','待回收确认') THEN 1 ELSE 0 END) as hang_count
@@ -721,12 +772,13 @@ app.get('/api/statistics/overview', authMiddleware, (req, res) => {
     data: {
       summary: {
         totalTags, totalGarments, totalHanging, pendingRecovery, unhandledMissing,
-        statusDistribution
+        expiringCount, overdueCount, statusDistribution
       },
       categoryDistribution,
       areaOccupancy,
       missingTypeStats,
       pendingConfirmList,
+      expiryReminders,
       anomalies: {
         frequentSwaps,
         overdueRecovery,

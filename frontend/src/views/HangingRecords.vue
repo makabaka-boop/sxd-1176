@@ -38,6 +38,11 @@
             <el-option label="无缺件" value="false" />
           </el-select>
         </el-form-item>
+        <el-form-item label="到期状态">
+          <el-select v-model="filters.expiryStatus" placeholder="全部" clearable style="width:140px;">
+            <el-option v-for="s in EXPIRY_STATUS_OPTIONS" :key="s.value" :label="s.label" :value="s.value" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="挂装日期">
           <el-date-picker
             v-model="dateRange"
@@ -92,17 +97,36 @@
             <el-tag v-else type="success" size="small">无</el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="到期状态" width="110">
+          <template #default="{ row }">
+            <el-tag v-if="row.expiry_status" :type="getExpiryStatusTagType(row.expiry_status)" size="small">
+              {{ getExpiryStatusLabel(row.expiry_status) }}
+            </el-tag>
+            <span v-else style="color:#909399;font-size:12px;">未设置</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="剩余天数" width="110" align="center">
+          <template #default="{ row }">
+            <span :style="{ color: row.expiry_status === 'overdue' ? '#f56c6c' : row.expiry_status === 'expiring' ? '#e6a23c' : '#606266' }">
+              {{ getDaysLeftText(row.days_left, row.expiry_status) }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="expected_off_date" label="预计下架日期" width="140" />
         <el-table-column label="状态" width="110">
           <template #default="{ row }">
             <el-tag :type="getStatusTagType(row.status)">{{ row.status }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="hang_time" label="挂装时间" width="170" />
-        <el-table-column label="操作" width="240" fixed="right">
+        <el-table-column label="操作" width="320" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="$router.push(`/hanging/${row.id}`)">详情</el-button>
             <el-button link type="primary" size="small" @click="openSwapDialog(row)" v-if="['已挂装','待调换'].includes(row.status)">调换</el-button>
-            <el-button link type="warning" size="small" @click="requestRecovery(row)" v-if="['已挂装','待调换','异常观察'].includes(row.status)">申请回收</el-button>
+            <el-button link type="danger" size="small" @click="quickRequestRecovery(row)" v-if="row.expiry_status === 'overdue' && ['已挂装','待调换','异常观察'].includes(row.status)">
+              快捷回收
+            </el-button>
+            <el-button link type="warning" size="small" @click="requestRecovery(row)" v-if="row.expiry_status !== 'overdue' && ['已挂装','待调换','异常观察'].includes(row.status)">申请回收</el-button>
             <el-button link type="danger" size="small" @click="reportMissing(row)" v-if="['已挂装','异常观察'].includes(row.status)">上报缺件</el-button>
           </template>
         </el-table-column>
@@ -162,6 +186,15 @@
             <el-option v-for="p in responsiblePersons" :key="p.id" :label="`${p.person_name}（${p.department}）`" :value="p.id" />
           </el-select>
         </el-form-item>
+        <el-form-item label="预计下架日期">
+          <el-date-picker
+            v-model="createForm.expectedOffDate"
+            type="date"
+            placeholder="选择预计下架日期"
+            value-format="YYYY-MM-DD"
+            style="width:100%;"
+          />
+        </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="createForm.remark" type="textarea" :rows="2" />
         </el-form-item>
@@ -201,6 +234,15 @@
             </el-form-item>
           </el-col>
         </el-row>
+        <el-form-item label="预计下架日期">
+          <el-date-picker
+            v-model="swapForm.expectedOffDate"
+            type="date"
+            placeholder="不修改则留空，沿用原日期"
+            value-format="YYYY-MM-DD"
+            style="width:100%;"
+          />
+        </el-form-item>
         <el-form-item label="调换原因" prop="swapReason">
           <el-input v-model="swapForm.swapReason" type="textarea" :rows="2" placeholder="请说明调换原因" />
         </el-form-item>
@@ -234,7 +276,7 @@
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search, Refresh } from '@element-plus/icons-vue'
-import { TAG_STATUS_OPTIONS, MISSING_TYPE_OPTIONS, getStatusTagType } from '@/utils/constants'
+import { TAG_STATUS_OPTIONS, MISSING_TYPE_OPTIONS, getStatusTagType, EXPIRY_STATUS_OPTIONS, getExpiryStatusTagType, getExpiryStatusLabel, getDaysLeftText } from '@/utils/constants'
 import {
   getCategoriesApi, getAreasApi, getResponsiblePersonsApi, getHangingRecordsApi,
   getAvailableTagsApi, getAvailableGarmentsApi, createHangingApi,
@@ -255,13 +297,13 @@ const missingTypes = MISSING_TYPE_OPTIONS
 const dateRange = ref([])
 const filters = reactive({
   page: 1, pageSize: 20, keyword: '', categoryId: '', areaId: '',
-  responsibleId: '', status: '', hasMissing: '', startDate: '', endDate: ''
+  responsibleId: '', status: '', hasMissing: '', expiryStatus: '', startDate: '', endDate: ''
 })
 
 const createDialogVisible = ref(false)
 const createFormRef = ref()
 const submitLoading = ref(false)
-const createForm = reactive({ tagId: '', garmentId: '', areaId: '', layerNo: 1, positionNo: 1, responsibleId: '', remark: '' })
+const createForm = reactive({ tagId: '', garmentId: '', areaId: '', layerNo: 1, positionNo: 1, responsibleId: '', expectedOffDate: '', remark: '' })
 const createRules = {
   tagId: [{ required: true, message: '请选择挂牌', trigger: 'change' }],
   garmentId: [{ required: true, message: '请选择样衣', trigger: 'change' }],
@@ -272,7 +314,7 @@ const createRules = {
 const swapDialogVisible = ref(false)
 const swapTarget = ref(null)
 const swapFormRef = ref()
-const swapForm = reactive({ originalHangId: '', newGarmentId: '', newAreaId: '', newLayerNo: '', newPositionNo: '', swapReason: '' })
+const swapForm = reactive({ originalHangId: '', newGarmentId: '', newAreaId: '', newLayerNo: '', newPositionNo: '', expectedOffDate: '', swapReason: '' })
 const swapRules = {
   newGarmentId: [{ required: true, message: '请选择新样衣', trigger: 'change' }],
   swapReason: [{ required: true, message: '请填写调换原因', trigger: 'blur' }]
@@ -309,13 +351,13 @@ async function loadData(page) {
 }
 
 function resetFilters() {
-  Object.assign(filters, { page: 1, keyword: '', categoryId: '', areaId: '', responsibleId: '', status: '', hasMissing: '' })
+  Object.assign(filters, { page: 1, keyword: '', categoryId: '', areaId: '', responsibleId: '', status: '', hasMissing: '', expiryStatus: '' })
   dateRange.value = []
   loadData()
 }
 
 async function openCreateDialog() {
-  Object.assign(createForm, { tagId: '', garmentId: '', areaId: areas.value[0]?.id || '', layerNo: 1, positionNo: 1, responsibleId: responsiblePersons.value[0]?.id || '', remark: '' })
+  Object.assign(createForm, { tagId: '', garmentId: '', areaId: areas.value[0]?.id || '', layerNo: 1, positionNo: 1, responsibleId: responsiblePersons.value[0]?.id || '', expectedOffDate: '', remark: '' })
   try {
     const [t, g] = await Promise.all([getAvailableTagsApi(), getAvailableGarmentsApi()])
     availableTags.value = t.data
@@ -339,7 +381,7 @@ async function submitCreate() {
 
 async function openSwapDialog(row) {
   swapTarget.value = row
-  Object.assign(swapForm, { originalHangId: row.id, newGarmentId: '', newAreaId: '', newLayerNo: '', newPositionNo: '', swapReason: '' })
+  Object.assign(swapForm, { originalHangId: row.id, newGarmentId: '', newAreaId: '', newLayerNo: '', newPositionNo: '', expectedOffDate: '', swapReason: '' })
   try {
     const res = await getAvailableGarmentsApi()
     availableGarments.value = res.data
@@ -358,6 +400,18 @@ async function submitSwap() {
     swapDialogVisible.value = false
     loadData()
   } finally { submitLoading.value = false }
+}
+
+function quickRequestRecovery(row) {
+  ElMessageBox.confirm(`该挂装已超期${Math.abs(row.days_left)}天，确认快速申请回收？`, '超期挂装快速回收', {
+    confirmButtonText: '确认回收',
+    cancelButtonText: '取消',
+    type: 'warning'
+  }).then(async () => {
+    await requestRecoveryApi({ hangId: row.id, remark: `超期自动回收：已超期${Math.abs(row.days_left)}天` })
+    ElMessage.success('回收申请已提交')
+    loadData()
+  }).catch(() => {})
 }
 
 function requestRecovery(row) {

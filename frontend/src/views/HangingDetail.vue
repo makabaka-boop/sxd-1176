@@ -7,6 +7,9 @@
       </div>
       <div v-if="detail" style="display:flex; gap:8px;">
         <el-button type="primary" :icon="Switch" @click="openSwapDialog" :disabled="!['已挂装','待调换'].includes(detail.status)">调换</el-button>
+        <el-button type="danger" v-if="detail.expiry_status === 'overdue' && ['已挂装','待调换','异常观察'].includes(detail.status)" @click="quickRequestRecovery">
+          快捷回收
+        </el-button>
         <el-button type="warning" :icon="RefreshLeft" @click="requestRecovery" :disabled="!['已挂装','待调换','异常观察'].includes(detail.status)">申请回收</el-button>
         <el-button type="danger" :icon="Warning" @click="reportMissing" :disabled="!['已挂装','异常观察'].includes(detail.status)">缺件上报</el-button>
       </div>
@@ -41,6 +44,25 @@
               <div class="detail-item">
                 <span class="detail-label">挂装时间</span>
                 <span class="detail-value">{{ detail.hang_time }}</span>
+              </div>
+              <div class="detail-item">
+                <span class="detail-label">预计下架日期</span>
+                <span class="detail-value">{{ detail.expected_off_date || '-' }}</span>
+              </div>
+              <div class="detail-item">
+                <span class="detail-label">到期状态</span>
+                <span class="detail-value">
+                  <el-tag v-if="detail.expiry_status" :type="getExpiryStatusTagType(detail.expiry_status)" size="small">
+                    {{ getExpiryStatusLabel(detail.expiry_status) }}
+                  </el-tag>
+                  <span v-else style="color:#909399;font-size:12px;">未设置</span>
+                </span>
+              </div>
+              <div class="detail-item">
+                <span class="detail-label">剩余天数</span>
+                <span class="detail-value" :style="{ color: detail.expiry_status === 'overdue' ? '#f56c6c' : detail.expiry_status === 'expiring' ? '#e6a23c' : '#606266' }">
+                  {{ getDaysLeftText(detail.days_left, detail.expiry_status) }}
+                </span>
               </div>
               <div class="detail-item">
                 <span class="detail-label">操作员</span>
@@ -171,6 +193,9 @@
                   <el-descriptions-item label="新样衣"><b>{{ s.new_garment_name }}</b></el-descriptions-item>
                   <el-descriptions-item label="原区域">{{ s.original_area }}</el-descriptions-item>
                   <el-descriptions-item label="新区域">{{ s.new_area || '未变更' }}</el-descriptions-item>
+                  <el-descriptions-item label="预计下架日期" :span="2">
+                    {{ s.expected_off_date || '未设置' }}
+                  </el-descriptions-item>
                 </el-descriptions>
                 <div style="margin-top:8px; color:#909399; font-size:12px;">
                   <b>原因：</b>{{ s.swap_reason || '未填写' }}
@@ -242,6 +267,15 @@
             </el-form-item>
           </el-col>
         </el-row>
+        <el-form-item label="预计下架日期">
+          <el-date-picker
+            v-model="swapForm.expectedOffDate"
+            type="date"
+            placeholder="不修改则留空，沿用原日期"
+            value-format="YYYY-MM-DD"
+            style="width:100%;"
+          />
+        </el-form-item>
         <el-form-item label="调换原因" prop="swapReason">
           <el-input v-model="swapForm.swapReason" type="textarea" :rows="2" />
         </el-form-item>
@@ -295,7 +329,7 @@ import { ref, reactive, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft, Switch, RefreshLeft, Warning, Plus, InfoFilled } from '@element-plus/icons-vue'
-import { getStatusTagType, MISSING_TYPE_OPTIONS } from '@/utils/constants'
+import { getStatusTagType, MISSING_TYPE_OPTIONS, getExpiryStatusTagType, getExpiryStatusLabel, getDaysLeftText } from '@/utils/constants'
 import {
   getHangingRecordApi, getAreasApi, getAvailableGarmentsApi,
   createSwapApi, requestRecoveryApi, createMissingPartApi, handleMissingPartApi
@@ -312,7 +346,7 @@ const submitLoading = ref(false)
 
 const swapDialogVisible = ref(false)
 const swapFormRef = ref()
-const swapForm = reactive({ originalHangId: '', newGarmentId: '', newAreaId: '', newLayerNo: '', newPositionNo: '', swapReason: '' })
+const swapForm = reactive({ originalHangId: '', newGarmentId: '', newAreaId: '', newLayerNo: '', newPositionNo: '', expectedOffDate: '', swapReason: '' })
 const swapRules = {
   newGarmentId: [{ required: true, message: '请选择新样衣', trigger: 'change' }],
   swapReason: [{ required: true, message: '请填写调换原因', trigger: 'blur' }]
@@ -341,7 +375,7 @@ async function loadDetail() {
 }
 
 async function openSwapDialog() {
-  Object.assign(swapForm, { originalHangId: detail.value.id, newGarmentId: '', newAreaId: '', newLayerNo: '', newPositionNo: '', swapReason: '' })
+  Object.assign(swapForm, { originalHangId: detail.value.id, newGarmentId: '', newAreaId: '', newLayerNo: '', newPositionNo: '', expectedOffDate: '', swapReason: '' })
   try {
     const [a, g] = await Promise.all([getAreasApi(), getAvailableGarmentsApi()])
     areas.value = a.data
@@ -361,6 +395,18 @@ async function submitSwap() {
     swapDialogVisible.value = false
     loadDetail()
   } finally { submitLoading.value = false }
+}
+
+function quickRequestRecovery() {
+  ElMessageBox.confirm(`该挂装已超期${Math.abs(detail.value.days_left)}天，确认快速申请回收？`, '超期挂装快速回收', {
+    confirmButtonText: '确认回收',
+    cancelButtonText: '取消',
+    type: 'warning'
+  }).then(async () => {
+    await requestRecoveryApi({ hangId: detail.value.id, remark: `超期自动回收：已超期${Math.abs(detail.value.days_left)}天` })
+    ElMessage.success('回收申请已提交')
+    loadDetail()
+  }).catch(() => {})
 }
 
 function requestRecovery() {

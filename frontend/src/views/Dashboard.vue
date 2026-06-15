@@ -1,7 +1,7 @@
 <template>
   <div class="page-container">
     <el-row :gutter="16" class="mb-16">
-      <el-col :span="4" v-for="s in summaryCards" :key="s.label">
+      <el-col :span="3" v-for="s in summaryCards" :key="s.label">
         <div class="stat-card flex-between">
           <div>
             <div class="stat-label">{{ s.label }}</div>
@@ -57,6 +57,34 @@
             <span style="color:#f56c6c;">⚠ 异常提醒</span>
           </div>
           <el-tabs v-model="activeTab">
+            <el-tab-pane label="到期提醒" name="expiry">
+              <el-empty v-if="!stats.expiryReminders?.length" description="暂无到期提醒" :image-size="80" />
+              <el-table v-else :data="stats.expiryReminders" size="small" stripe>
+                <el-table-column prop="tag_code" label="挂牌编号" width="120" />
+                <el-table-column label="样衣" show-overflow-tooltip>
+                  <template #default="{ row }">{{ row.garment_name }}</template>
+                </el-table-column>
+                <el-table-column prop="area_name" label="区域" width="100" />
+                <el-table-column label="到期状态" width="90" align="center">
+                  <template #default="{ row }">
+                    <el-tag v-if="Math.floor(row.days_left) < 0" type="danger" size="small">已超期</el-tag>
+                    <el-tag v-else type="warning" size="small">即将到期</el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="剩余天数" width="90" align="center">
+                  <template #default="{ row }">
+                    <span :style="{ color: Math.floor(row.days_left) < 0 ? '#f56c6c' : '#e6a23c' }">
+                      {{ Math.floor(row.days_left) < 0 ? `超期${Math.abs(Math.floor(row.days_left))}天` : Math.floor(row.days_left) === 0 ? '今天' : `${Math.floor(row.days_left)}天` }}
+                    </span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="操作" width="90" align="center">
+                  <template #default="{ row }">
+                    <el-button link type="primary" size="small" @click="$router.push(`/hanging/${row.hang_id}`)">查看</el-button>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </el-tab-pane>
             <el-tab-pane label="调换过频" name="swap">
               <el-empty v-if="!stats.anomalies?.frequentSwaps?.length" description="暂无调换过频记录" :image-size="80" />
               <el-table v-else :data="stats.anomalies.frequentSwaps" size="small" stripe>
@@ -125,16 +153,16 @@
 import { ref, reactive, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import * as echarts from 'echarts'
-import { Tickets, CollectionTag, ShoppingCartFull, Warning, RefreshRight } from '@element-plus/icons-vue'
+import { Tickets, CollectionTag, ShoppingCartFull, Warning, RefreshRight, Clock, Bell } from '@element-plus/icons-vue'
 import { getOverviewStatsApi } from '@/api'
 
 const router = useRouter()
 const stats = reactive({
   summary: {}, categoryDistribution: [], areaOccupancy: [], missingTypeStats: [],
-  pendingConfirmList: [], anomalies: {}, trendData: []
+  pendingConfirmList: [], expiryReminders: [], anomalies: {}, trendData: []
 })
 const summaryCards = ref([])
-const activeTab = ref('swap')
+const activeTab = ref('expiry')
 
 const categoryChartRef = ref()
 const statusChartRef = ref()
@@ -150,6 +178,8 @@ async function loadData() {
     { label: '挂牌总数', value: stats.summary.totalTags || 0, color: '#409eff', icon: Tickets },
     { label: '样衣总数', value: stats.summary.totalGarments || 0, color: '#67c23a', icon: CollectionTag },
     { label: '在挂数量', value: stats.summary.totalHanging || 0, color: '#e6a23c', icon: ShoppingCartFull },
+    { label: '即将到期', value: stats.summary.expiringCount || 0, color: '#e6a23c', icon: Clock },
+    { label: '已超期', value: stats.summary.overdueCount || 0, color: '#f56c6c', icon: Bell },
     { label: '待回收确认', value: stats.summary.pendingRecovery || 0, color: '#f56c6c', icon: RefreshRight },
     { label: '未处理缺件', value: stats.summary.unhandledMissing || 0, color: '#909399', icon: Warning }
   ]

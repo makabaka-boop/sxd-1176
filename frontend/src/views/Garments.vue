@@ -147,6 +147,15 @@
             <el-option v-for="p in responsiblePersons" :key="p.id" :label="`${p.person_name}（${p.department}）`" :value="p.id" />
           </el-select>
         </el-form-item>
+        <el-form-item label="预计下架日期">
+          <el-date-picker
+            v-model="hangForm.expectedOffDate"
+            type="date"
+            placeholder="选择预计下架日期"
+            value-format="YYYY-MM-DD"
+            style="width:100%;"
+          />
+        </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="hangForm.remark" type="textarea" :rows="2" />
         </el-form-item>
@@ -193,7 +202,7 @@ const hangDialogVisible = ref(false)
 const targetGarment = ref(null)
 const hangFormRef = ref()
 const hangLoading = ref(false)
-const hangForm = reactive({ tagId: '', areaId: '', layerNo: 1, positionNo: 1, responsibleId: '', remark: '' })
+const hangForm = reactive({ tagId: '', areaId: '', layerNo: 1, positionNo: 1, responsibleId: '', expectedOffDate: '', remark: '' })
 const hangRules = {
   tagId: [{ required: true, message: '请选择挂牌', trigger: 'change' }],
   areaId: [{ required: true, message: '请选择区域', trigger: 'change' }],
@@ -261,7 +270,7 @@ function canHang(row) {
 
 async function openHangDialog(row) {
   targetGarment.value = row
-  Object.assign(hangForm, { tagId: '', areaId: areas.value[0]?.id || '', layerNo: 1, positionNo: 1, responsibleId: responsiblePersons.value[0]?.id || '', remark: '' })
+  Object.assign(hangForm, { tagId: '', areaId: areas.value[0]?.id || '', layerNo: 1, positionNo: 1, responsibleId: responsiblePersons.value[0]?.id || '', expectedOffDate: '', remark: '' })
   try {
     const res = await getAvailableTagsApi()
     availableTags.value = res.data

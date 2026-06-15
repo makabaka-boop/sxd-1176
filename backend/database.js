@@ -94,6 +94,7 @@ function initDatabase() {
       responsible_id INTEGER NOT NULL,
       operator_id INTEGER,
       hang_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+      expected_off_date DATE,
       status TEXT DEFAULT '已挂装',
       remark TEXT,
       FOREIGN KEY (tag_id) REFERENCES tags(id),
@@ -192,19 +193,28 @@ function initDatabase() {
 }
 
 function migrateDatabase() {
-  const columns = db.prepare(`PRAGMA table_info(swap_records)`).all();
-  const colNames = columns.map(c => c.name);
-  if (!colNames.includes('original_garment_id')) {
+  const swapCols = db.prepare(`PRAGMA table_info(swap_records)`).all();
+  const swapColNames = swapCols.map(c => c.name);
+  if (!swapColNames.includes('original_garment_id')) {
     db.prepare(`ALTER TABLE swap_records ADD COLUMN original_garment_id INTEGER`).run();
   }
-  if (!colNames.includes('original_area_id')) {
+  if (!swapColNames.includes('original_area_id')) {
     db.prepare(`ALTER TABLE swap_records ADD COLUMN original_area_id INTEGER`).run();
   }
-  if (!colNames.includes('original_layer_no')) {
+  if (!swapColNames.includes('original_layer_no')) {
     db.prepare(`ALTER TABLE swap_records ADD COLUMN original_layer_no INTEGER`).run();
   }
-  if (!colNames.includes('original_position_no')) {
+  if (!swapColNames.includes('original_position_no')) {
     db.prepare(`ALTER TABLE swap_records ADD COLUMN original_position_no INTEGER`).run();
+  }
+  if (!swapColNames.includes('expected_off_date')) {
+    db.prepare(`ALTER TABLE swap_records ADD COLUMN expected_off_date DATE`).run();
+  }
+
+  const hangCols = db.prepare(`PRAGMA table_info(hanging_records)`).all();
+  const hangColNames = hangCols.map(c => c.name);
+  if (!hangColNames.includes('expected_off_date')) {
+    db.prepare(`ALTER TABLE hanging_records ADD COLUMN expected_off_date DATE`).run();
   }
 }
 
